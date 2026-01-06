@@ -1,0 +1,53 @@
+# Core Framework
+streamlit
+langchain
+langgraph
+langsmith
+langchain-community
+langchain-core
+langchain-classic
+
+# VLM/LLM APIs
+huggingface-hub
+requests
+
+# Data Validation
+pydantic
+pydantic-settings
+
+# Terminal UI & Logging
+colorlog
+rich
+tqdm
+
+# Database
+sqlalchemy
+alembic
+
+# PDF Generation
+reportlab
+Pillow
+
+# Image Processing
+opencv-python
+numpy
+
+# Utilities
+python-dotenv
+PyYAML
+python-multipart
+
+# Date/Time
+python-dateutil
+
+# HTTP Client
+httpx
+aiohttp
+
+# Development (optional, comment out for production)
+pytest
+pytest-cov
+black
+ruff
+mypy
+pre-commit
