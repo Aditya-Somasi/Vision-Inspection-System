@@ -83,14 +83,14 @@ A production-ready AI system that performs **safety-critical visual inspection**
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/vision-inspection-system.git
-cd vision-inspection-system
+git clone https://github.com/Aditya-Somasi/Vision-Inspection-System.git
+cd Vision-Inspection-System
 
-# Install dependencies
+# Install with UV (recommended)
+uv sync
+
+# Or use pip
 pip install -r requirements.txt
-
-# Or use Poetry
-poetry install
 ```
 
 ### **Configuration**
@@ -121,11 +121,11 @@ EXPLAINER_MODEL=meta-llama/Llama-3.1-8B-Instruct
 ### **Run Application**
 
 ```bash
-# Launch with health checks
-python app.py
+# Launch with health checks (recommended)
+python -m app.main
 
 # Or run Streamlit directly (skips health checks)
-streamlit run ui.py
+streamlit run app/ui.py
 ```
 
 The application will:
@@ -305,18 +305,56 @@ pytest tests/test_safety_gates.py -v
 
 ```
 vision-inspection-system/
-├── app.py              # Main entry + health checks
-├── ui.py               # Streamlit frontend
-├── config.py           # Configuration management
-├── models.py           # VLM agents + Pydantic schemas
-├── workflow.py         # LangGraph orchestration
-├── safety.py           # Safety gates + consensus
-├── reports.py          # PDF generation
-├── database.py         # SQLAlchemy ORM
-├── logger.py           # Enhanced logging (rich + colorlog)
-├── prompts.py          # Versioned prompt templates
-├── chat_memory.py      # Chat history management
-└── tests/              # Test suite
+├── app/                    # Application entry points
+│   ├── main.py             # Health checks + launcher
+│   └── ui.py               # Streamlit frontend
+│
+├── src/                    # Core source modules
+│   ├── agents/             # VLM agents (modular)
+│   │   ├── base.py         # BaseVLMAgent class
+│   │   ├── inspector.py    # Qwen2-VL inspector
+│   │   ├── auditor.py      # Llama 3.2 auditor
+│   │   └── explainer.py    # Llama 3.1 explainer
+│   │
+│   ├── orchestration/      # LangGraph workflow
+│   │   ├── state.py        # Workflow state schema
+│   │   ├── nodes.py        # Node functions
+│   │   └── graph.py        # Graph construction
+│   │
+│   ├── safety/             # Safety logic
+│   │   ├── consensus.py    # VLM agreement analysis
+│   │   └── gates.py        # 6 deterministic safety gates
+│   │
+│   ├── database/           # Persistence layer
+│   │   ├── models.py       # SQLAlchemy ORM
+│   │   └── repository.py   # CRUD operations
+│   │
+│   ├── reporting/          # Report generation
+│   │   └── pdf.py          # PDF with annotations
+│   │
+│   ├── schemas/            # Pydantic models
+│   │   └── models.py       # Data validation schemas
+│   │
+│   └── chat_memory.py      # Chat history management
+│
+├── utils/                  # Utility modules
+│   ├── config.py           # Pydantic configuration
+│   ├── logger.py           # Rich + colorlog logging
+│   └── prompts.py          # Versioned prompt templates
+│
+├── tests/                  # Test suite
+│   ├── conftest.py         # Pytest fixtures
+│   └── test_safety_gates.py
+│
+├── data/                   # Data directories (gitignored)
+│   ├── uploads/
+│   ├── reports/
+│   └── logs/
+│
+├── .env.example            # Configuration template
+├── .gitignore
+├── pyproject.toml          # UV/Poetry config
+└── README.md
 ```
 
 ### **Code Quality**

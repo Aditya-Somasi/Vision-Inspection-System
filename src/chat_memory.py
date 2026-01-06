@@ -15,9 +15,9 @@ from langchain.memory import ConversationBufferMemory
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 
-from logger import setup_logger
-from config import config
-from prompts import CHAT_SYSTEM_PROMPT, CHAT_HISTORY_AWARE_PROMPT
+from utils.logger import setup_logger
+from utils.config import config
+from utils.prompts import CHAT_SYSTEM_PROMPT, CHAT_HISTORY_AWARE_PROMPT
 
 logger = setup_logger(__name__, level=config.log_level, component="CHAT_MEMORY")
 

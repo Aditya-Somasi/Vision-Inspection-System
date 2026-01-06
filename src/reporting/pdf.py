@@ -22,8 +22,8 @@ from PIL import Image, ImageDraw, ImageFont
 import cv2
 import numpy as np
 
-from logger import setup_logger
-from config import config, REPORT_DIR
+from utils.logger import setup_logger
+from utils.config import config, REPORT_DIR
 
 logger = setup_logger(__name__, level=config.log_level, component="REPORTS")
 
