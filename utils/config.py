@@ -48,23 +48,31 @@ class Config(BaseSettings):
         alias="VLM_INSPECTOR_TEMPERATURE"
     )
     vlm_inspector_max_tokens: int = Field(
-        default=1024,
+        default=2048,
         alias="VLM_INSPECTOR_MAX_TOKENS"
     )
+    vlm_inspector_provider: str = Field(
+        default="huggingface",
+        alias="VLM_INSPECTOR_PROVIDER"
+    )
     
-    # Auditor model - Using Qwen (Llama 3.2 Vision requires provider billing on HF)
-    # To use Llama: Set up Together AI billing at huggingface.co/settings/billing
+    # Auditor model - Llama 4 Maverick on Groq for TRUE independent verification
+    # DIFFERENT model architecture (MoE) and provider for real consensus
     vlm_auditor_model: str = Field(
-        default="Qwen/Qwen2.5-VL-7B-Instruct",
+        default="meta-llama/llama-4-maverick-17b-128e-instruct",
         alias="VLM_AUDITOR_MODEL"
     )
     vlm_auditor_temperature: float = Field(
-        default=0.2,
+        default=0.1,
         alias="VLM_AUDITOR_TEMPERATURE"
     )
     vlm_auditor_max_tokens: int = Field(
-        default=1024,
+        default=2048,
         alias="VLM_AUDITOR_MAX_TOKENS"
+    )
+    vlm_auditor_provider: str = Field(
+        default="groq",
+        alias="VLM_AUDITOR_PROVIDER"
     )
     
     explainer_model: str = Field(

@@ -241,5 +241,5 @@ def health_check_database() -> bool:
         return False
 
 
-# Initialize on import
-init_database()
+# Note: init_database() should be called explicitly at app startup
+# Do NOT auto-initialize on import as it can cause issues with testing and imports

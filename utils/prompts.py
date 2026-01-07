@@ -24,11 +24,17 @@ CONTEXT:
 
 YOUR TASK:
 1. Identify what object or component is shown in the image
-2. Detect ALL visible defects, damage, or abnormalities
+2. Detect ALL visible defects, damage, or abnormalities - INCLUDING TINY/SUBTLE ONES
 3. For EACH defect, provide:
-   - Type (e.g., crack, rust, corrosion, deformation, tear, discoloration)
+   - Type (e.g., crack, rust, corrosion, deformation, tear, discoloration, scratch, chip, pit, wear)
    - Specific location description (e.g., "top-left corner", "center threading area")
-   - ALWAYS provide bounding box coordinates (x, y, width, height) - be as precise as possible
+   - **PRECISE bounding box coordinates** (x, y, width, height in PIXELS):
+     * x = distance from LEFT edge of image to LEFT edge of defect
+     * y = distance from TOP edge of image to TOP edge of defect
+     * width = horizontal span of the defect
+     * height = vertical span of the defect
+     * BE PRECISE - box should TIGHTLY enclose ONLY the damaged area, not the whole object
+     * For small defects: use small boxes (even 10x10 pixels for tiny defects)
    - Safety impact: CRITICAL, MODERATE, or COSMETIC
    - Detailed reasoning for why this defect is concerning
    - Confidence level: high, medium, or low
@@ -39,10 +45,22 @@ YOUR TASK:
    - MEDIUM: Important but not safety-critical (structural components, mechanical parts)
    - LOW: Non-critical items (decorative, cosmetic, low-risk applications)
 
+SMALL DEFECT DETECTION:
+- Look VERY carefully for hairline cracks, microscopic pits, subtle discoloration, small chips
+- Zoom mentally into different regions: corners, edges, center, surfaces
+- Even tiny defects can be critical on safety components
+- If image is high resolution, small defects might only be a few pixels wide - still detect them
+
 SAFETY IMPACT GUIDELINES:
 - CRITICAL: Could cause injury, death, system failure, contamination, or immediate hazard
 - MODERATE: Affects function or durability but not immediately dangerous
 - COSMETIC: Visual defect only, no functional or safety impact
+
+BOUNDING BOX PRECISION:
+- The highlighted area MUST precisely match the defect location
+- For a 5mm crack: if image is 1000px wide and crack is at center spanning 50px, use x=475, width=50
+- For tiny defects: minimum box size 10x10 pixels
+- DO NOT over-highlight - box should NOT include undamaged areas
 
 IMPORTANT RULES:
 - Be thorough - missing a critical defect could be dangerous
@@ -56,11 +74,11 @@ Return ONLY valid JSON in this exact format (no other text):
   "overall_condition": "damaged" | "good" | "uncertain",
   "defects": [
     {{
-      "type": "crack",
-      "location": "threading area, upper-right quadrant",
-      "bbox": {{"x": 100, "y": 150, "width": 50, "height": 30}},
+      "type": "hairline_crack",
+      "location": "threading area, upper-right quadrant, 3mm from edge",
+      "bbox": {{"x": 450, "y": 120, "width": 35, "height": 8}},
       "safety_impact": "CRITICAL",
-      "reasoning": "Cracks in threaded fasteners can cause sudden failure under load",
+      "reasoning": "Hairline cracks in threaded fasteners propagate under cyclic loading",
       "confidence": "high",
       "recommended_action": "Replace immediately - do not use in any load-bearing application"
     }}
@@ -89,10 +107,24 @@ PREVIOUS INSPECTOR FOUND:
 YOUR TASK AS AUDITOR:
 1. Re-examine the image independently with a skeptical mindset
 2. Look for:
-   - Defects the Inspector might have MISSED
+   - Defects the Inspector might have MISSED (especially SMALL/SUBTLE ones)
    - Defects that might be LESS severe than the Inspector stated
+   - Defects that might be MORE severe than the Inspector stated
    - Additional concerns or uncertainties
-3. Provide your OWN independent assessment
+3. Provide your OWN independent assessment with PRECISE bounding boxes
+
+SMALL DEFECT DETECTION:
+- Scan the ENTIRE image systematically: corners, edges, surfaces, shadows
+- Look for: hairline cracks, tiny pits, microscopic corrosion, subtle wear patterns
+- Small defects are OFTEN missed - be extra vigilant
+- Use small, tight bounding boxes for small defects (even 10x10 pixels)
+
+BOUNDING BOX PRECISION:
+- Your bbox should EXACTLY match the defect location
+- x = pixels from LEFT edge to defect LEFT edge
+- y = pixels from TOP edge to defect TOP edge
+- width/height = exact span of the defect in pixels
+- DO NOT over-highlight - box should TIGHTLY enclose ONLY the damage
 
 AUDITOR GUIDELINES:
 - Do NOT simply agree with the Inspector - form your own opinion
@@ -100,6 +132,7 @@ AUDITOR GUIDELINES:
 - If you're uncertain about anything, mark confidence as "low"
 - Consider whether the Inspector's severity assessments are accurate
 - Look for defects in areas the Inspector may not have examined closely
+- VERIFY Inspector's bounding boxes are accurate - correct them if wrong
 
 BE CONSERVATIVE:
 - If the criticality level is "high", be extra thorough
@@ -113,7 +146,7 @@ Return ONLY valid JSON in the same format as the Inspector:
   "defects": [
     {{
       "type": "...",
-      "location": "...",
+      "location": "precise location with distances from edges if possible",
       "bbox": {{"x": ..., "y": ..., "width": ..., "height": ...}},
       "safety_impact": "CRITICAL" | "MODERATE" | "COSMETIC",
       "reasoning": "...",

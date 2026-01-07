@@ -1,16 +1,21 @@
 """
 VLM Inspector Agent using HuggingFace with Qwen2.5-VL.
-Uses LangChain's ChatHuggingFace wrapper for vision analysis.
+Includes image optimization, retry logic, and robust JSON parsing.
 """
 
 import time
+import re
+import json
+import base64
+import io
 from pathlib import Path
+from typing import Optional, Dict, Any
 
+from PIL import Image
 from huggingface_hub import InferenceClient
-from langchain_core.messages import HumanMessage
 
 from src.agents.base import BaseVLMAgent
-from src.schemas.models import VLMAnalysisResult, InspectionContext
+from src.schemas.models import VLMAnalysisResult, InspectionContext, DefectInfo
 from utils.config import config
 from utils.prompts import INSPECTOR_PROMPT
 
@@ -19,6 +24,7 @@ class VLMInspectorAgent(BaseVLMAgent):
     """
     Primary inspection agent using HuggingFace with Qwen2.5-VL.
     Performs initial defect detection and safety assessment.
+    Includes image optimization and robust error handling.
     """
     
     def __init__(self):
@@ -27,9 +33,8 @@ class VLMInspectorAgent(BaseVLMAgent):
         self.model_id = config.vlm_inspector_model
         self.temperature = config.vlm_inspector_temperature
         self.max_tokens = config.vlm_inspector_max_tokens
+        self.max_image_size = getattr(config, 'max_image_dimension', 1024)
         
-        # We don't use LangChain for HuggingFace vision models
-        # (langchain-huggingface doesn't support vision well yet)
         super().__init__(
             llm=None,  # We'll use InferenceClient directly
             nickname="Inspector",
@@ -37,6 +42,262 @@ class VLMInspectorAgent(BaseVLMAgent):
         )
         
         self.logger.info(f"Initialized Inspector with HuggingFace model: {self.model_id}")
+    
+    def _encode_image_optimized(self, image_path: Path, max_size: Optional[int] = None) -> str:
+        """
+        Encode image with resize and compression to prevent oversized payloads.
+        
+        Args:
+            image_path: Path to image file
+            max_size: Maximum dimension (width or height)
+            
+        Returns:
+            Base64 data URI string
+        """
+        max_size = max_size or self.max_image_size
+        
+        img = Image.open(image_path)
+        original_size = img.size
+        
+        # Resize if too large
+        if max(img.size) > max_size:
+            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            self.logger.debug(f"Resized image from {original_size} to {img.size}")
+        
+        # Convert to RGB if needed (RGBA/P modes can't be saved as JPEG)
+        if img.mode in ('RGBA', 'P', 'LA'):
+            img = img.convert('RGB')
+        
+        # Compress to JPEG with quality optimization
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=85, optimize=True)
+        
+        # Check size and reduce quality if still too large (>5MB)
+        if buffer.tell() > 5_000_000:
+            self.logger.debug(f"Image still large ({buffer.tell()} bytes), reducing quality")
+            buffer = io.BytesIO()
+            img.save(buffer, format="JPEG", quality=60, optimize=True)
+        
+        # Final size check
+        payload_size = buffer.tell()
+        if payload_size > 10_000_000:
+            raise ValueError(f"Image too large even after optimization: {payload_size} bytes")
+        
+        self.logger.debug(f"Encoded image: {payload_size} bytes")
+        base64_str = base64.b64encode(buffer.getvalue()).decode()
+        return f"data:image/jpeg;base64,{base64_str}"
+    
+    def _call_api_with_retry(self, messages: list, max_retries: int = 3) -> str:
+        """
+        Call HuggingFace API with exponential backoff retry logic.
+        
+        Args:
+            messages: Chat messages to send
+            max_retries: Maximum retry attempts
+            
+        Returns:
+            Response text from model
+        """
+        retry_delay = 1  # Initial delay in seconds
+        
+        for attempt in range(max_retries):
+            try:
+                completion = self.client.chat.completions.create(
+                    model=self.model_id,
+                    messages=messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens
+                )
+                return completion.choices[0].message.content
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                
+                # Check for rate limiting
+                if "429" in str(e) or "rate" in error_str:
+                    # Try to parse Retry-After header
+                    retry_after = retry_delay * (2 ** attempt)
+                    self.logger.warning(
+                        f"Rate limited, waiting {retry_after}s before retry {attempt+1}/{max_retries}"
+                    )
+                    time.sleep(retry_after)
+                    
+                elif "413" in str(e) or "payload" in error_str:
+                    # Payload too large - don't retry, it won't help
+                    raise ValueError(f"Image payload too large for API: {e}")
+                    
+                elif attempt < max_retries - 1:
+                    # General error, retry with backoff
+                    wait_time = retry_delay * (2 ** attempt)
+                    self.logger.warning(
+                        f"API attempt {attempt+1} failed: {e}, retrying in {wait_time}s..."
+                    )
+                    time.sleep(wait_time)
+                else:
+                    # Final attempt failed
+                    raise
+        
+        raise RuntimeError(f"API call failed after {max_retries} attempts")
+    
+    def _parse_json_robust(self, text: str) -> Dict[str, Any]:
+        """
+        Robustly parse JSON from model response.
+        Handles markdown fences, nested braces, and malformed output.
+        
+        Args:
+            text: Raw response text
+            
+        Returns:
+            Parsed JSON dict
+        """
+        text = text.strip()
+        
+        # Try 1: Extract from markdown code fence
+        fence_pattern = r'```(?:json)?\s*([\s\S]*?)```'
+        fence_matches = re.findall(fence_pattern, text)
+        if fence_matches:
+            for match in fence_matches:
+                try:
+                    return json.loads(match.strip())
+                except json.JSONDecodeError:
+                    continue
+        
+        # Try 2: Find balanced JSON object using stack-based parsing
+        def find_balanced_json(s: str) -> Optional[str]:
+            """Find the largest balanced JSON object in text."""
+            best_json = None
+            best_length = 0
+            
+            i = 0
+            while i < len(s):
+                if s[i] == '{':
+                    # Found potential JSON start
+                    depth = 0
+                    start = i
+                    in_string = False
+                    escape_next = False
+                    
+                    for j in range(i, len(s)):
+                        char = s[j]
+                        
+                        if escape_next:
+                            escape_next = False
+                            continue
+                        
+                        if char == '\\':
+                            escape_next = True
+                            continue
+                        
+                        if char == '"' and not escape_next:
+                            in_string = not in_string
+                            continue
+                        
+                        if not in_string:
+                            if char == '{':
+                                depth += 1
+                            elif char == '}':
+                                depth -= 1
+                                if depth == 0:
+                                    # Found complete JSON
+                                    candidate = s[start:j+1]
+                                    if len(candidate) > best_length:
+                                        try:
+                                            json.loads(candidate)
+                                            best_json = candidate
+                                            best_length = len(candidate)
+                                        except json.JSONDecodeError:
+                                            pass
+                                    break
+                i += 1
+            
+            return best_json
+        
+        balanced_json = find_balanced_json(text)
+        if balanced_json:
+            try:
+                return json.loads(balanced_json)
+            except json.JSONDecodeError:
+                pass
+        
+        # Try 3: Simple extraction (fallback)
+        start_idx = text.find("{")
+        end_idx = text.rfind("}") + 1
+        
+        if start_idx != -1 and end_idx > start_idx:
+            try:
+                return json.loads(text[start_idx:end_idx])
+            except json.JSONDecodeError:
+                pass
+        
+        # Failed to parse - log and raise
+        self.logger.error(f"JSON parsing failed. Raw text (first 500 chars): {text[:500]}")
+        raise ValueError(f"Failed to parse JSON from model response")
+    
+    def _validate_and_fix_result(self, result_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate and fix common issues in model output.
+        
+        Args:
+            result_dict: Parsed JSON dict from model
+            
+        Returns:
+            Validated and fixed dict
+        """
+        # Ensure required fields exist
+        if "object_identified" not in result_dict:
+            result_dict["object_identified"] = "unknown"
+        
+        if "overall_condition" not in result_dict:
+            result_dict["overall_condition"] = "uncertain"
+        
+        if "overall_confidence" not in result_dict:
+            result_dict["overall_confidence"] = "low"
+        
+        if "defects" not in result_dict:
+            result_dict["defects"] = []
+        
+        # Validate and fix defects
+        valid_defects = []
+        for defect in result_dict.get("defects", []):
+            if isinstance(defect, dict):
+                # Ensure required defect fields
+                defect.setdefault("type", "unspecified")
+                defect.setdefault("location", "unspecified")
+                defect.setdefault("safety_impact", "MODERATE")
+                defect.setdefault("reasoning", "No reasoning provided")
+                defect.setdefault("confidence", "medium")
+                defect.setdefault("recommended_action", "Further inspection recommended")
+                
+                # Validate safety_impact
+                if defect["safety_impact"] not in ["CRITICAL", "MODERATE", "COSMETIC"]:
+                    defect["safety_impact"] = "MODERATE"
+                
+                # Validate confidence
+                if defect["confidence"] not in ["high", "medium", "low"]:
+                    defect["confidence"] = "medium"
+                
+                # Validate bbox if present
+                if "bbox" in defect and defect["bbox"]:
+                    bbox = defect["bbox"]
+                    if isinstance(bbox, dict):
+                        # Check for valid bbox values
+                        required_keys = ["x", "y", "width", "height"]
+                        if all(k in bbox for k in required_keys):
+                            # Validate non-negative values
+                            if any(bbox.get(k, 0) < 0 for k in required_keys):
+                                self.logger.warning(f"Invalid bbox with negative values: {bbox}")
+                                defect["bbox"] = None
+                                defect["bbox_approximate"] = True
+                        else:
+                            defect["bbox"] = None
+                    else:
+                        defect["bbox"] = None
+                
+                valid_defects.append(defect)
+        
+        result_dict["defects"] = valid_defects
+        
+        return result_dict
     
     def analyze(
         self,
@@ -63,8 +324,8 @@ class VLMInspectorAgent(BaseVLMAgent):
                 user_notes=context.user_notes or "None provided"
             )
             
-            # Encode image to base64 for vision
-            image_data = self._encode_image_to_base64(image_path)
+            # Encode image with optimization
+            image_data = self._encode_image_optimized(image_path)
             
             # Build messages for chat completions API
             messages = [
@@ -80,26 +341,38 @@ class VLMInspectorAgent(BaseVLMAgent):
             self.logger.debug("Calling HuggingFace API...")
             start_time = time.time()
             
-            # Call HuggingFace InferenceClient
-            completion = self.client.chat.completions.create(
-                model=self.model_id,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens
-            )
-            
-            response_text = completion.choices[0].message.content
+            # Call API with retry logic
+            response_text = self._call_api_with_retry(messages)
             
             elapsed = time.time() - start_time
             self.logger.info(f"HuggingFace response received in {elapsed:.2f}s")
+            self.logger.debug(f"Raw response (first 300 chars): {response_text[:300]}...")
             
-            self.logger.debug(f"Raw response: {response_text[:300]}...")
+            # Parse JSON robustly
+            result_dict = self._parse_json_robust(response_text)
             
-            # Parse JSON
-            result_dict = self._parse_json_response(response_text)
+            # Validate and fix result
+            result_dict = self._validate_and_fix_result(result_dict)
             
-            # Validate and create Pydantic model
+            # Create Pydantic model
             result = VLMAnalysisResult(**result_dict)
+            
+            # Apply agent-inferred criticality if provided
+            if result.inferred_criticality:
+                user_criticality = context.criticality
+                inferred = result.inferred_criticality
+                
+                if user_criticality != inferred:
+                    self.logger.info(
+                        f"Agent inferred criticality '{inferred}' differs from user's '{user_criticality}'"
+                    )
+                    # Update context with inferred criticality (agent overrides user if higher)
+                    criticality_order = {"low": 0, "medium": 1, "high": 2}
+                    if criticality_order.get(inferred, 1) > criticality_order.get(user_criticality, 1):
+                        self.logger.warning(
+                            f"Upgrading criticality from '{user_criticality}' to '{inferred}' "
+                            f"based on agent analysis"
+                        )
             
             self.logger.info(
                 f"Analysis complete: {len(result.defects)} defects found, "

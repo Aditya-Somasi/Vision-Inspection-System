@@ -272,6 +272,18 @@ def generate_explanation(state: InspectionState) -> InspectionState:
         
         state["explanation"] = explanation
         
+        # Generate decision support (Cost & Time)
+        try:
+            decision_support = explainer.generate_decision_support(
+                consensus.get("combined_defects", []),
+                verdict.get("verdict", "UNKNOWN")
+            )
+            state["decision_support"] = decision_support
+            logger.info("Decision support metrics generated")
+        except Exception as e:
+            logger.error(f"Decision support generation failed: {e}")
+            state["decision_support"] = {}
+        
         logger.info("Explanation generated successfully")
         
     except Exception as e:

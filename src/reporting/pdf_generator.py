@@ -26,7 +26,7 @@ import numpy as np
 
 from utils.logger import setup_logger
 from utils.config import config, REPORT_DIR
-from utils.image_utils import create_heatmap_overlay, create_side_by_side_comparison
+from utils.image_utils import create_heatmap_overlay, create_side_by_side_comparison, draw_bounding_boxes
 
 logger = setup_logger(__name__, level=config.log_level, component="REPORTS")
 
@@ -50,56 +50,72 @@ BRAND_DARK = HexColor("#1f2937")      # Dark
 
 def parse_explanation_sections(explanation: str) -> Dict[str, str]:
     """
-    Parse explainer output into sections.
+    Parse explainer output into sections for structured PDF display.
     
-    Returns dict with keys: EXECUTIVE SUMMARY, INSPECTION DETAILS, 
-    DEFECT ANALYSIS, FINAL RECOMMENDATION
+    Handles various markdown formats: **Bold Headers**, ## Markdown Headers
     """
     # Handle None or empty explanation
     if not explanation:
-        return {"INTRODUCTION": "Explanation not available - workflow may have been interrupted."}
+        return {"SUMMARY": "Explanation not available - workflow may have been interrupted."}
     
     sections = {}
-    section_names = [
-        "EXECUTIVE SUMMARY",
-        "INSPECTION DETAILS", 
-        "DEFECT ANALYSIS",
-        "FINAL RECOMMENDATION"
-    ]
     
-    # Clean markdown formatting
-    text = explanation.replace("**", "").replace("##", "").replace("#", "")
-    text = text.strip()
+    # Map of patterns to normalized section names
+    section_patterns = {
+        "SUMMARY": ["summary", "inspection findings", "verdict", "overview"],
+        "KEY TAKEAWAYS": ["key takeaways", "takeaways", "highlights"],
+        "RECOMMENDATIONS": ["recommendations", "recommended", "action items", "next steps"],
+        "REASONING CHAINS": ["reasoning chains", "reasoning", "analysis chain"],
+        "INSPECTOR ANALYSIS": ["inspector analysis", "inspector"],
+        "AUDITOR VERIFICATION": ["auditor verification", "auditor"],
+        "COUNTERFACTUAL": ["counterfactual", "what if"],
+    }
     
-    # Split by section headers
-    current_section = "INTRODUCTION"
+    # Clean text but preserve structure markers
+    text = explanation.strip()
+    
+    # Split by various section markers
+    current_section = "SUMMARY"
     current_content = []
     
     for line in text.split("\n"):
-        line_upper = line.strip().upper()
+        line_stripped = line.strip()
+        line_clean = line_stripped.replace("**", "").replace("##", "").replace("#", "").replace(":", "").strip()
+        line_lower = line_clean.lower()
         
         # Check if line is a section header
         matched_section = None
-        for section in section_names:
-            if section in line_upper or line_upper.startswith(section):
-                matched_section = section
+        for section_name, patterns in section_patterns.items():
+            for pattern in patterns:
+                if pattern in line_lower and len(line_clean) < 60:  # Headers are usually short
+                    matched_section = section_name
+                    break
+            if matched_section:
                 break
         
         if matched_section:
             # Save previous section
             if current_content:
-                sections[current_section] = "\n".join(current_content).strip()
+                content_text = "\n".join(current_content).strip()
+                # Clean up markdown formatting for PDF
+                content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
+                sections[current_section] = content_text
             current_section = matched_section
             current_content = []
         else:
-            if line.strip():
-                current_content.append(line.strip())
+            if line_stripped:
+                # Clean markdown for PDF compatibility
+                clean_line = line_stripped.replace("**", "").replace("##", "").replace("#", "")
+                current_content.append(clean_line)
     
     # Save last section
     if current_content:
-        sections[current_section] = "\n".join(current_content).strip()
+        content_text = "\n".join(current_content).strip()
+        content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
+        sections[current_section] = content_text
     
     return sections
+
 
 
 def format_agreement_score(score: float) -> str:
@@ -284,11 +300,11 @@ class InspectionReport:
         if logo_path:
             self.logo_path = Path(logo_path)
         else:
-            # Try to find Mouri.jpg in project root
+            # Try to find Mouri.jpg in project root (use relative/dynamic paths only)
             possible_paths = [
                 Path("Mouri.jpg"),
-                Path("d:/Vision Inspection System/Mouri.jpg"),
-                Path(__file__).parent.parent.parent / "Mouri.jpg"
+                Path(__file__).parent.parent.parent / "Mouri.jpg",
+                Path.cwd() / "Mouri.jpg",
             ]
             self.logo_path = None
             for p in possible_paths:
@@ -420,11 +436,14 @@ class InspectionReport:
         # Executive summary
         story.extend(self._build_executive_summary(state))
         
-        # Evidence section (side-by-side images)
-        story.extend(self._build_evidence_section(state))
+        # Evidence section (3-panel visual layout)
+        story.extend(self._build_visual_evidence(state))
         
         # Defect details
         story.extend(self._build_defect_details(state))
+        
+        # Decision Support (Cost & Time)
+        story.extend(self._build_decision_support(state))
         
         # Model comparison
         story.extend(self._build_model_comparison(state))
@@ -447,6 +466,75 @@ class InspectionReport:
         
         return output_path
     
+    def _build_decision_support(self, state: Dict[str, Any]) -> List:
+        """Build decision support section with Repiar vs Replace analysis."""
+        elements = []
+        
+        # Check if decision support data exists
+        decision = state.get("decision_support", {})
+        if not decision or decision.get("recommendation", "Review") == "No Action Required":
+            return elements
+            
+        elements.append(Paragraph("Decision Support Analysis", self.styles["SectionHeader"]))
+        elements.append(Spacer(1, 0.1 * inch))
+        
+        # Main Recommendation Banner
+        rec = decision.get("recommendation", "REVIEW").upper()
+        rec_color = BRAND_DANGER if rec == "REPLACE" else BRAND_WARNING if rec == "REPAIR" else BRAND_PRIMARY
+        
+        # Create a banner table
+        banner_data = [[f"RECOMMENDED ACTION: {rec}"]]
+        banner = Table(banner_data, colWidths=[6.5 * inch])
+        banner.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), rec_color),
+            ("TEXTCOLOR", (0, 0), (-1, -1), white),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 14),
+            ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("ROUNDEDCORNERS", [10, 10, 10, 10]), 
+        ]))
+        elements.append(banner)
+        elements.append(Spacer(1, 0.2 * inch))
+        
+        # Reasoning text
+        reasoning = decision.get("reasoning", "")
+        if reasoning:
+            elements.append(Paragraph(f"<b>Basis:</b> {reasoning}", self.styles["CustomBodyText"]))
+            elements.append(Spacer(1, 0.2 * inch))
+        
+        # Comparison Table
+        # Metrics: Cost (INR), Time, Feasibility
+        
+        data = [
+            ["Metric", "Repair Option", "Replace Option"],
+            ["Estimated Cost", decision.get("repair_cost", "N/A"), decision.get("replace_cost", "N/A")],
+            ["Time Required", decision.get("repair_time", "N/A"), decision.get("replace_time", "N/A")],
+        ]
+        
+        t = Table(data, colWidths=[2.0 * inch, 2.25 * inch, 2.25 * inch])
+        t.setStyle(TableStyle([
+            # Header
+            ("BACKGROUND", (0, 0), (-1, 0), BRAND_GRAY),
+            ("TEXTCOLOR", (0, 0), (-1, 0), white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+            
+            # Data
+            ("ALIGN", (0, 1), (-1, -1), "CENTER"),
+            ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"), # First col bold
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [white, HexColor("#f8fafc")]),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        
+        elements.append(t)
+        elements.append(Spacer(1, 0.3 * inch))
+        
+        return elements
+
     def _build_title_section(self, state: Dict[str, Any]) -> List:
         """Build title section."""
         elements = []
@@ -575,29 +663,36 @@ class InspectionReport:
         
         # Display each section with proper formatting
         section_order = [
-            "EXECUTIVE SUMMARY",
-            "INSPECTION DETAILS",
-            "DEFECT ANALYSIS",
-            "FINAL RECOMMENDATION"
+            "SUMMARY",
+            "KEY TAKEAWAYS",
+            "RECOMMENDATIONS",
+            "REASONING CHAINS",
+            "INSPECTOR ANALYSIS",
+            "AUDITOR VERIFICATION",
+            "COUNTERFACTUAL"
         ]
         
         for section_name in section_order:
             if section_name in sections:
-                elements.append(Paragraph(section_name, section_header_style))
+                # Use user-friendly display names
+                display_name = section_name.title()
+                elements.append(Paragraph(display_name, section_header_style))
                 elements.append(Paragraph(sections[section_name], self.styles["CustomBodyText"]))
                 elements.append(Spacer(1, 0.1 * inch))
         
         # If no sections were parsed, just display the raw explanation
         if not any(s in sections for s in section_order):
             display_text = explanation if explanation else "Explanation not available."
+            # Clean any residual markdown
+            display_text = display_text.replace("**", "").replace("##", "").replace("#", "")
             elements.append(Paragraph(display_text, self.styles["CustomBodyText"]))
         
         elements.append(Spacer(1, 0.2 * inch))
         
         return elements
     
-    def _build_evidence_section(self, state: Dict[str, Any]) -> List:
-        """Build evidence section with side-by-side images."""
+    def _build_visual_evidence(self, state: Dict[str, Any]) -> List:
+        """Build evidence section with 3-panel visual layout."""
         elements = []
         
         elements.append(Paragraph("Visual Evidence", self.styles["SectionHeader"]))
@@ -611,42 +706,96 @@ class InspectionReport:
         defects = consensus.get("combined_defects", [])
         
         try:
-            # Create heatmap overlay
+            # Panel 1: Original image
+            # Panel 2: Heatmap with severity highlighting
+            # Panel 3: Numbered annotation markers
+            
             heatmap_path = REPORT_DIR / f"heatmap_{image_path.stem}.jpg"
+            annotated_path = REPORT_DIR / f"annotated_{image_path.stem}.jpg"
+            
+            # Create heatmap overlay (red hotspots on defects)
             create_heatmap_overlay(image_path, defects, heatmap_path)
             
-            # Create side-by-side comparison
-            comparison_path = REPORT_DIR / f"comparison_{image_path.stem}.jpg"
-            create_side_by_side_comparison(
-                image_path, 
-                heatmap_path, 
-                comparison_path,
-                labels=("Original Input", "AI Analysis Layer")
-            )
+            # Create numbered annotation image
+            if defects:
+                boxes = []
+                for i, defect in enumerate(defects, 1):
+                    bbox = defect.get("bbox", {})
+                    boxes.append({
+                        "x": bbox.get("x", 50 + i*30),
+                        "y": bbox.get("y", 50 + i*30), 
+                        "width": bbox.get("width", 50),
+                        "height": bbox.get("height", 50),
+                        "label": f"#{i}",
+                        "severity": defect.get("safety_impact", "MODERATE")
+                    })
+                draw_bounding_boxes(image_path, boxes, annotated_path)
+            else:
+                # No defects - just copy original
+                import shutil
+                shutil.copy(image_path, annotated_path)
             
-            # Add comparison image to PDF
-            if comparison_path.exists():
-                img = RLImage(
-                    str(comparison_path), 
-                    width=6.5 * inch, 
-                    height=3 * inch,
-                    kind="proportional"
-                )
-                elements.append(img)
-                elements.append(Spacer(1, 0.1 * inch))
+            # Create 3-panel comparison using table
+            panel_width = 2.1 * inch
+            panel_height = 1.6 * inch
+            
+            panels = []
+            
+            # Load original
+            if image_path.exists():
+                panels.append(RLImage(str(image_path), width=panel_width, height=panel_height, kind="proportional"))
+            else:
+                panels.append(Paragraph("N/A", self.styles["Normal"]))
+            
+            # Load heatmap
+            if heatmap_path.exists():
+                panels.append(RLImage(str(heatmap_path), width=panel_width, height=panel_height, kind="proportional"))
+            else:
+                panels.append(Paragraph("N/A", self.styles["Normal"]))
+            
+            # Load annotated
+            if annotated_path.exists():
+                panels.append(RLImage(str(annotated_path), width=panel_width, height=panel_height, kind="proportional"))
+            else:
+                panels.append(Paragraph("N/A", self.styles["Normal"]))
+            
+            # Build the 3-panel table
+            panel_table = Table([panels], colWidths=[panel_width + 0.1*inch] * 3)
+            panel_table.setStyle(TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            elements.append(panel_table)
+            elements.append(Spacer(1, 0.05 * inch))
+            
+            # Captions for each panel
+            captions = ["1. Original Image", "2. Defect Heatmap", "3. Numbered Markers"]
+            caption_table = Table([captions], colWidths=[panel_width + 0.1*inch] * 3)
+            caption_table.setStyle(TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
+                ("TEXTCOLOR", (0, 0), (-1, -1), BRAND_GRAY),
+            ]))
+            elements.append(caption_table)
+            elements.append(Spacer(1, 0.1 * inch))
+            
+            # Legend
+            if defects:
+                legend_text = "<b>Legend:</b> "
+                for i, defect in enumerate(defects, 1):
+                    severity = defect.get("safety_impact", "UNKNOWN")
+                    defect_type = defect.get("type", "unknown")
+                    legend_text += f"<b>#{i}</b> = {defect_type.title()} ({severity}) &nbsp;&nbsp;"
+                elements.append(Paragraph(legend_text, ParagraphStyle(
+                    name="Legend",
+                    parent=self.styles["Normal"],
+                    fontSize=8,
+                    textColor=BRAND_GRAY,
+                )))
                 
-                # Caption
-                caption = Paragraph(
-                    "<i>Left: Original uploaded image. Right: AI analysis with defect regions highlighted.</i>",
-                    ParagraphStyle(
-                        name="Caption",
-                        parent=self.styles["Normal"],
-                        fontSize=9,
-                        textColor=BRAND_GRAY,
-                        alignment=TA_CENTER
-                    )
-                )
-                elements.append(caption)
         except Exception as e:
             self.logger.error(f"Failed to create evidence images: {e}")
             # Fallback to original image
@@ -690,12 +839,24 @@ class InspectionReport:
             elements.append(Paragraph(defect_title, self.styles["SubHeader"]))
             
             # Defect details table
+            # Wrap long text in Paragraphs to prevent truncation
+            text_style = ParagraphStyle(
+                name="TableText",
+                parent=self.styles["Normal"],
+                fontSize=9,
+                leading=11,
+            )
+            
+            # Format confidence as numeric percentage
+            conf_str = defect.get("confidence", "unknown")
+            conf_numeric = {"high": "90%", "medium": "60%", "low": "30%"}.get(conf_str.lower(), conf_str)
+            
             details = [
                 ["Severity", severity],
-                ["Location", defect.get("location", "Not specified")],
-                ["Confidence", defect.get("confidence", "unknown").title()],
-                ["Reasoning", defect.get("reasoning", "Not provided")],
-                ["Recommendation", defect.get("recommended_action", "Further inspection recommended")]
+                ["Location", Paragraph(defect.get("location", "Not specified"), text_style)],
+                ["Confidence", f"{conf_str.title()} ({conf_numeric})"],
+                ["Reasoning", Paragraph(defect.get("reasoning", "Not provided"), text_style)],
+                ["Recommendation", Paragraph(defect.get("recommended_action", "Further inspection recommended"), text_style)]
             ]
             
             table = Table(details, colWidths=[1.5 * inch, 5 * inch])
@@ -784,19 +945,88 @@ class InspectionReport:
         return elements
     
     def _build_audit_trail(self, state: Dict[str, Any]) -> List:
-        """Build audit trail section."""
+        """Build comprehensive audit trail with ALL safety gates evaluation."""
         elements = []
         
-        elements.append(Paragraph("Audit Trail", self.styles["SectionHeader"]))
+        elements.append(Paragraph("Safety Gates Evaluation", self.styles["SectionHeader"]))
         
         verdict = state.get("safety_verdict", {})
+        consensus = state.get("consensus", {})
+        defect_summary = verdict.get("defect_summary", {})
         
-        # Triggered gates
-        gates = verdict.get("triggered_gates", [])
-        if gates:
-            elements.append(Paragraph("<b>Safety Gates Triggered:</b>", self.styles["SubHeader"]))
-            for gate in gates:
-                elements.append(Paragraph(f"• {gate}", self.styles["CustomBodyText"]))
+        # Get all gate results if available
+        all_gate_results = defect_summary.get("all_gate_results", [])
+        
+        if all_gate_results:
+            # Build table showing ALL gates with pass/fail
+            gate_data = [["Gate", "Status", "Details"]]
+            
+            for gate in all_gate_results:
+                gate_name = gate.get("display_name", gate.get("gate_id", "Unknown"))
+                passed = gate.get("passed", True)
+                message = gate.get("message", "")
+                
+                status = "✓ PASSED" if passed else "✗ FAILED"
+                gate_data.append([gate_name, status, message])
+            
+            table = Table(gate_data, colWidths=[2.2 * inch, 1 * inch, 3.3 * inch])
+            table.setStyle(TableStyle([
+                # Header
+                ("BACKGROUND", (0, 0), (-1, 0), BRAND_PRIMARY),
+                ("TEXTCOLOR", (0, 0), (-1, 0), white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 9),
+                # Data rows
+                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BOX", (0, 0), (-1, -1), 1, BRAND_GRAY),
+                ("GRID", (0, 0), (-1, -1), 0.5, BRAND_GRAY),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            
+            # Color the status column based on pass/fail
+            for i, gate in enumerate(all_gate_results, 1):
+                if gate.get("passed", True):
+                    table.setStyle(TableStyle([
+                        ("TEXTCOLOR", (1, i), (1, i), BRAND_SUCCESS),
+                        ("FONTNAME", (1, i), (1, i), "Helvetica-Bold"),
+                    ]))
+                else:
+                    table.setStyle(TableStyle([
+                        ("TEXTCOLOR", (1, i), (1, i), BRAND_DANGER),
+                        ("FONTNAME", (1, i), (1, i), "Helvetica-Bold"),
+                        ("BACKGROUND", (0, i), (-1, i), HexColor("#fff5f5")),
+                    ]))
+            
+            elements.append(table)
+            elements.append(Spacer(1, 0.15 * inch))
+        else:
+            # Fallback: Show triggered gates only
+            gates = verdict.get("triggered_gates", [])
+            if gates:
+                elements.append(Paragraph("<b>Safety Gates Triggered:</b>", self.styles["SubHeader"]))
+                for gate in gates:
+                    elements.append(Paragraph(f"• {gate}", self.styles["CustomBodyText"]))
+                elements.append(Spacer(1, 0.1 * inch))
+        
+        # Add disagreement analysis if models disagree
+        if not consensus.get("models_agree", True):
+            elements.append(Paragraph("<b>Disagreement Analysis:</b>", self.styles["SubHeader"]))
+            
+            inspector_defects = len(state.get("inspector_result", {}).get("defects", []))
+            auditor_defects = len(state.get("auditor_result", {}).get("defects", []))
+            
+            disagreement_text = f"""
+            <b>Point of Disagreement:</b> Defect Count<br/>
+            • Inspector identified: {inspector_defects} defect(s)<br/>
+            • Auditor identified: {auditor_defects} defect(s)<br/>
+            • Agreement Score: {consensus.get('agreement_score', 0):.0%}<br/>
+            • Resolution: Defer to more thorough analysis, combined {len(consensus.get('combined_defects', []))} unique defects<br/>
+            """
+            elements.append(Paragraph(disagreement_text, self.styles["CustomBodyText"]))
             elements.append(Spacer(1, 0.1 * inch))
         
         # Processing info

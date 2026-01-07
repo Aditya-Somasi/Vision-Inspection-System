@@ -41,6 +41,33 @@ def clear_request_id():
     _request_context.clear()
 
 
+class SensitiveDataFilter(logging.Filter):
+    """Filter to mask sensitive data like API keys in log messages."""
+    
+    # Patterns to mask (key prefix -> replacement)
+    SENSITIVE_PATTERNS = [
+        ("hf_", "hf_***MASKED***"),
+        ("gsk_", "gsk_***MASKED***"),
+        ("sk-", "sk-***MASKED***"),
+        ("api_key=", "api_key=***MASKED***"),
+        ("API_KEY=", "API_KEY=***MASKED***"),
+        ("token=", "token=***MASKED***"),
+    ]
+    
+    def filter(self, record):
+        if hasattr(record, 'msg') and record.msg:
+            msg = str(record.msg)
+            for pattern, replacement in self.SENSITIVE_PATTERNS:
+                if pattern in msg:
+                    # Find and mask the sensitive value
+                    import re
+                    # Match pattern followed by alphanumeric characters
+                    regex = rf"({re.escape(pattern)})([a-zA-Z0-9_-]+)"
+                    msg = re.sub(regex, replacement, msg)
+            record.msg = msg
+        return True
+
+
 class ContextFilter(logging.Filter):
     """Add request ID and component name to log records."""
     

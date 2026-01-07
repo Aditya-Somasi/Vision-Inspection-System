@@ -5,10 +5,11 @@ langgraph
 langsmith
 langchain-community
 langchain-core
-langchain-classic
+langchain-groq
 
 # VLM/LLM APIs
 huggingface-hub
+groq
 requests
 
 # Data Validation

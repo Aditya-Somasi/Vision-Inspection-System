@@ -35,39 +35,105 @@ st.set_page_config(
 # Custom CSS for enhanced UI
 st.markdown("""
 <style>
-    /* Verdict banners */
+    /* Enhanced Verdict banners */
     .verdict-safe {
         background: linear-gradient(135deg, #10b981, #059669);
-        padding: 1rem 2rem;
-        border-radius: 0.75rem;
+        padding: 1.5rem 2rem;
+        border-radius: 1rem;
         color: white;
-        font-size: 1.25rem;
+        font-size: 1.5rem;
         font-weight: bold;
         text-align: center;
         margin: 1rem 0;
-        box-shadow: 0 4px 6px rgba(16, 185, 129, 0.3);
+        box-shadow: 0 8px 16px rgba(16, 185, 129, 0.4);
+        border: 3px solid #059669;
     }
     .verdict-unsafe {
         background: linear-gradient(135deg, #ef4444, #dc2626);
-        padding: 1rem 2rem;
-        border-radius: 0.75rem;
+        padding: 1.5rem 2rem;
+        border-radius: 1rem;
         color: white;
-        font-size: 1.25rem;
+        font-size: 1.5rem;
         font-weight: bold;
         text-align: center;
         margin: 1rem 0;
-        box-shadow: 0 4px 6px rgba(239, 68, 68, 0.3);
+        box-shadow: 0 8px 16px rgba(239, 68, 68, 0.4);
+        border: 3px solid #dc2626;
     }
     .verdict-review {
         background: linear-gradient(135deg, #f59e0b, #d97706);
-        padding: 1rem 2rem;
-        border-radius: 0.75rem;
+        padding: 1.5rem 2rem;
+        border-radius: 1rem;
         color: white;
-        font-size: 1.25rem;
+        font-size: 1.5rem;
         font-weight: bold;
         text-align: center;
         margin: 1rem 0;
-        box-shadow: 0 4px 6px rgba(245, 158, 11, 0.3);
+        box-shadow: 0 8px 16px rgba(245, 158, 11, 0.4);
+        border: 3px solid #d97706;
+    }
+    
+    /* ALL CLEAR banner for safe images */
+    .all-clear-banner {
+        background: linear-gradient(135deg, #10b981, #059669, #10b981);
+        padding: 2rem;
+        border-radius: 1rem;
+        color: white;
+        text-align: center;
+        margin: 1.5rem 0;
+        box-shadow: 0 8px 20px rgba(16, 185, 129, 0.5);
+        border: 4px solid #059669;
+        animation: pulse-green 2s infinite;
+    }
+    @keyframes pulse-green {
+        0%, 100% { box-shadow: 0 8px 20px rgba(16, 185, 129, 0.5); }
+        50% { box-shadow: 0 8px 30px rgba(16, 185, 129, 0.8); }
+    }
+    
+    /* Confidence Progress Bars */
+    .confidence-bar-container {
+        background: #e5e7eb;
+        border-radius: 0.5rem;
+        height: 24px;
+        overflow: hidden;
+        margin: 0.5rem 0;
+    }
+    .confidence-bar {
+        height: 100%;
+        border-radius: 0.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding-right: 0.5rem;
+        font-size: 0.75rem;
+        font-weight: bold;
+        color: white;
+        transition: width 0.5s ease;
+    }
+    .confidence-high { background: linear-gradient(90deg, #22c55e, #16a34a); }
+    .confidence-medium { background: linear-gradient(90deg, #eab308, #ca8a04); }
+    .confidence-low { background: linear-gradient(90deg, #ef4444, #dc2626); }
+    
+    /* Gate Status Badges */
+    .gate-passed {
+        background: #dcfce7;
+        color: #166534;
+        padding: 0.25rem 0.75rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+        margin: 0.125rem;
+    }
+    .gate-failed {
+        background: #fee2e2;
+        color: #991b1b;
+        padding: 0.25rem 0.75rem;
+        border-radius: 0.25rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        display: inline-block;
+        margin: 0.125rem;
     }
     
     /* Metric cards */
@@ -277,23 +343,150 @@ def save_uploaded_file(uploaded_file) -> Optional[Path]:
         return None
 
 
-def display_verdict_banner(verdict: str):
-    """Display styled verdict banner."""
-    if verdict == "SAFE":
+def display_verdict_banner(verdict: str, defect_count: int = 0, gate_results: list = None):
+    """Display styled verdict banner with enhanced all-clear for safe images."""
+    if verdict == "SAFE" and defect_count == 0:
+        # Show ALL CLEAR banner for no defects
+        st.markdown('''
+        <div class="all-clear-banner">
+            <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">✅ ✅ ✅</div>
+            <div style="font-size: 1.75rem; font-weight: bold;">ALL CLEAR</div>
+            <div style="font-size: 1rem; margin-top: 0.5rem; opacity: 0.9;">
+                No defects detected by either agent
+            </div>
+            <div style="font-size: 0.875rem; margin-top: 0.75rem;">
+                Inspector: ✅ No issues &nbsp;|&nbsp; Auditor: ✅ Confirmed
+            </div>
+        </div>
+        ''', unsafe_allow_html=True)
+    elif verdict == "SAFE":
         st.markdown(
-            '<div class="verdict-safe">✅ SAFE - No Critical Defects Detected</div>',
+            '<div class="verdict-safe">✅ SAFE - Cosmetic Issues Only (No Safety Impact)</div>',
             unsafe_allow_html=True
         )
     elif verdict == "UNSAFE":
         st.markdown(
-            '<div class="verdict-unsafe">🚫 UNSAFE - Critical Defect Detected</div>',
+            '<div class="verdict-unsafe">🚫 UNSAFE - Defects Detected Requiring Attention</div>',
             unsafe_allow_html=True
         )
     else:
         st.markdown(
-            '<div class="verdict-review">⚠️ REQUIRES HUMAN REVIEW</div>',
+            '<div class="verdict-review">⚠️ REQUIRES HUMAN REVIEW - Verification Needed</div>',
             unsafe_allow_html=True
         )
+
+
+def display_confidence_bar(label: str, confidence: str, numeric_value: float = None):
+    """Display a confidence progress bar with percentage."""
+    # Convert string confidence to numeric
+    if numeric_value is None:
+        confidence_map = {"high": 0.9, "medium": 0.6, "low": 0.3}
+        numeric_value = confidence_map.get(confidence.lower() if confidence else "low", 0.5)
+    
+    percentage = int(numeric_value * 100)
+    
+    # Determine color class
+    if percentage >= 80:
+        color_class = "confidence-high"
+    elif percentage >= 50:
+        color_class = "confidence-medium"
+    else:
+        color_class = "confidence-low"
+    
+    st.markdown(f"""
+    <div style="margin-bottom: 0.75rem;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+            <span style="font-weight: 500;">{label}</span>
+            <span style="font-weight: bold;">{percentage}%</span>
+        </div>
+        <div class="confidence-bar-container">
+            <div class="confidence-bar {color_class}" style="width: {percentage}%;">
+                {confidence.title() if isinstance(confidence, str) else ''}
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def display_all_gate_results(gate_results: list):
+    """Display all safety gate evaluation results."""
+    if not gate_results:
+        return
+    
+    st.subheader("🔒 Safety Gate Evaluation")
+    
+    for gate in gate_results:
+        passed = gate.get("passed", True)
+        gate_name = gate.get("display_name", gate.get("gate_id", "Unknown Gate"))
+        message = gate.get("message", "")
+        
+        emoji = "✅" if passed else "❌"
+        badge_class = "gate-passed" if passed else "gate-failed"
+        status_text = "PASSED" if passed else "FAILED"
+        
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; margin-bottom: 0.5rem; padding: 0.5rem; background: #f8fafc; border-radius: 0.5rem;">
+            <span style="font-size: 1.25rem; margin-right: 0.75rem;">{emoji}</span>
+            <div style="flex: 1;">
+                <span style="font-weight: 600;">{gate_name}</span>
+                <span style="color: #6b7280; margin-left: 0.5rem; font-size: 0.875rem;">{message}</span>
+            </div>
+            <span class="{badge_class}">{status_text}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def display_streaming_progress(current_step: int, total_steps: int = 5, step_names: list = None):
+    """Display real-time streaming progress during inspection."""
+    if step_names is None:
+        step_names = [
+            "Image preprocessing",
+            "Inspector analysis",
+            "Auditor verification",
+            "Consensus analysis",
+            "Safety evaluation"
+        ]
+    
+    progress_html = '<div style="margin: 1rem 0;">'
+    
+    for i, step_name in enumerate(step_names, 1):
+        if i < current_step:
+            icon = "✅"
+            status = "Complete"
+            color = "#10b981"
+        elif i == current_step:
+            icon = "🔄"
+            status = "In Progress..."
+            color = "#3b82f6"
+        else:
+            icon = "⏳"
+            status = "Waiting"
+            color = "#9ca3af"
+        
+        progress_html += f'''
+        <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+            <span style="font-size: 1.25rem; margin-right: 0.5rem;">{icon}</span>
+            <span style="flex: 1; color: {color}; font-weight: {'600' if i == current_step else '400'};">
+                Step {i}/{total_steps}: {step_name}
+            </span>
+            <span style="color: {color}; font-size: 0.875rem;">[{status}]</span>
+        </div>
+        '''
+    
+    # Progress bar
+    progress_percent = int((current_step - 1) / total_steps * 100)
+    progress_html += f'''
+    <div style="margin-top: 1rem;">
+        <div class="confidence-bar-container">
+            <div class="confidence-bar confidence-high" style="width: {progress_percent}%;">
+                {progress_percent}%
+            </div>
+        </div>
+    </div>
+    '''
+    progress_html += '</div>'
+    
+    return progress_html
 
 
 def display_human_review_form(results: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -371,39 +564,134 @@ def display_human_review_form(results: Dict[str, Any]) -> Optional[Dict[str, Any
     return None
 
 
+
+def display_decision_support(results: Dict[str, Any]):
+    """Display Decision Support (Repair vs Replace) section."""
+    if "decision_support" not in results:
+        return
+
+    decision = results.get("decision_support", {})
+    if not decision or decision.get("recommendation", "Review") == "No Action Required":
+        return
+
+    st.divider()
+    st.subheader("💰 Decision Support")
+    
+    # Recommendation Banner
+    rec = decision.get("recommendation", "REVIEW").upper()
+    
+    if rec == "REPLACE":
+        bg_color = "#fee2e2" # Red-100
+        border_color = "#ef4444"
+        icon = "🛑"
+    elif rec == "REPAIR":
+        bg_color = "#fef3c7" # Amber-100
+        border_color = "#f59e0b" 
+        icon = "🔧"
+    else:
+        bg_color = "#e0f2fe" # Blue-100
+        border_color = "#3b82f6"
+        icon = "ℹ️"
+
+    st.markdown(f"""
+    <div style="background-color: {bg_color}; border: 2px solid {border_color}; padding: 1rem; border-radius: 0.5rem; text-align: center; margin-bottom: 1rem;">
+        <h3 style="margin:0; color: #1f2937;">{icon} RECOMMENDATION: {rec}</h3>
+        <p style="margin:0.5rem 0 0 0; color: #4b5563;">{decision.get('reasoning', '')}</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Cost Comparison
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 🔧 Repair Option")
+        st.metric("Estimated Cost", decision.get("repair_cost", "N/A"))
+        st.caption(f"Time: {decision.get('repair_time', 'N/A')}")
+        
+    with col2:
+        st.markdown("### 📦 Replace Option")
+        st.metric("Estimated Cost", decision.get("replace_cost", "N/A"))
+        st.caption(f"Lead Time: {decision.get('replace_time', 'N/A')}")
+
 def display_inspection_results(results: Dict[str, Any]):
-    """Display inspection results in enhanced UI."""
+    """Display inspection results in enhanced UI with confidence bars and gate display."""
     verdict = results.get("safety_verdict", {})
     consensus = results.get("consensus", {})
     
-    # Verdict banner
-    display_verdict_banner(verdict.get("verdict", "UNKNOWN"))
+    defects = consensus.get("combined_defects", [])
+    defect_count = len(defects)
     
-    # Metrics row
+    # Get gate results for display
+    gate_results = verdict.get("defect_summary", {}).get("all_gate_results", [])
+    
+    # Verdict banner with defect count for all-clear display
+    display_verdict_banner(verdict.get("verdict", "UNKNOWN"), defect_count, gate_results)
+    
+    # Confidence Metrics Section
+    st.subheader("📊 Confidence Metrics")
+    
+    inspector_result = results.get("inspector_result", {})
+    auditor_result = results.get("auditor_result", {})
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        display_confidence_bar(
+            "Inspector Confidence",
+            inspector_result.get("overall_confidence", "medium")
+        )
+        display_confidence_bar(
+            "Auditor Confidence",
+            auditor_result.get("overall_confidence", "medium")
+        )
+    
+    with col2:
+        agreement_score = consensus.get("agreement_score", 0.5)
+        display_confidence_bar(
+            "Model Agreement",
+            "high" if agreement_score >= 0.8 else "medium" if agreement_score >= 0.5 else "low",
+            agreement_score
+        )
+        processing_time = results.get('processing_time') or 0
+        st.markdown(f"""
+        <div style="margin-bottom: 0.75rem;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                <span style="font-weight: 500;">Processing Time</span>
+                <span style="font-weight: bold;">{processing_time:.2f}s</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Summary metrics row
+    st.divider()
     col1, col2, col3, col4 = st.columns(4)
     
-    defects = consensus.get("combined_defects", [])
     critical_count = sum(
         1 for d in defects if d.get("safety_impact") == "CRITICAL"
     )
+    moderate_count = sum(
+        1 for d in defects if d.get("safety_impact") == "MODERATE"
+    )
+    cosmetic_count = sum(
+        1 for d in defects if d.get("safety_impact") == "COSMETIC"
+    )
     
     with col1:
-        st.metric("Total Defects", len(defects))
+        st.metric("Total Defects", defect_count)
     with col2:
-        st.metric("Critical Defects", critical_count)
+        st.metric("🔴 Critical", critical_count)
     with col3:
-        st.metric(
-            "Models Agree",
-            "Yes ✓" if consensus.get("models_agree") else "No ⚠",
-            delta="High confidence" if consensus.get("models_agree") else None,
-            delta_color="off"
-        )
+        st.metric("🟡 Moderate", moderate_count)
     with col4:
-        processing_time = results.get('processing_time') or 0
-        st.metric(
-            "Processing Time",
-            f"{processing_time:.2f}s"
-        )
+        st.metric("🔵 Cosmetic", cosmetic_count)
+    
+    # Decision Support Section
+    display_decision_support(results)
+
+    # Safety Gate Evaluation (show all gates)
+    if gate_results:
+        st.divider()
+        display_all_gate_results(gate_results)
     
     # Show criticality upgrade notification if applicable
     context = results.get("context", {})
@@ -440,8 +728,8 @@ def display_inspection_results(results: Dict[str, Any]):
     else:
         st.info("⚠️ Analysis summary pending system completion.")
     
-    # Visual Evidence Section - Side by Side Comparison
-    st.subheader("🖼️ Visual Evidence")
+    # Visual Evidence Section - 3-Panel Layout
+    st.subheader("🖼️ Visual Evidence (3-Panel View)")
     image_path = results.get("image_path")
     
     # Try alternate location if main path fails (sometimes relative/absolute mix-up)
@@ -450,7 +738,7 @@ def display_inspection_results(results: Dict[str, Any]):
          
     if image_path and Path(image_path).exists():
         try:
-            from utils.image_utils import create_heatmap_overlay, create_side_by_side_comparison
+            from utils.image_utils import create_heatmap_overlay, draw_bounding_boxes
             from utils.config import REPORT_DIR
             
             image_path = Path(image_path)
@@ -460,40 +748,94 @@ def display_inspection_results(results: Dict[str, Any]):
             if not heatmap_path.exists():
                 create_heatmap_overlay(image_path, defects, heatmap_path)
             
-            # Create comparison
-            comparison_path = REPORT_DIR / f"comparison_{image_path.stem}.jpg"
-            if not comparison_path.exists():
-                create_side_by_side_comparison(
-                    image_path, 
-                    heatmap_path, 
-                    comparison_path,
-                    labels=("Original Input", "AI Analysis Layer")
-                )
+            # Create annotated image with numbered markers
+            annotated_path = REPORT_DIR / f"annotated_{image_path.stem}.jpg"
+            if defects and not annotated_path.exists():
+                boxes = []
+                for i, defect in enumerate(defects, 1):
+                    bbox = defect.get("bbox", {})
+                    boxes.append({
+                        "x": bbox.get("x", 50 + i*30),
+                        "y": bbox.get("y", 50 + i*30),
+                        "width": bbox.get("width", 50),
+                        "height": bbox.get("height", 50),
+                        "label": f"#{i}",
+                        "severity": defect.get("safety_impact", "MODERATE")
+                    })
+                draw_bounding_boxes(image_path, boxes, annotated_path)
             
-            # Display comparison
-            if comparison_path.exists():
-                st.image(
-                    str(comparison_path), 
-                    caption="📊 Original vs AI Analysis with Defect Heatmap",
-                    use_container_width=True
-                )
-            else:
-                # Fallback: show original and heatmap separately
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**Original Input**")
-                    st.image(str(image_path))
-                with col2:
-                    st.markdown("**AI Analysis Layer**")
-                    if heatmap_path.exists():
-                        st.image(str(heatmap_path))
-                    else:
-                        st.image(str(image_path))
+            # 3-Panel Display
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**1. Original Image**")
+                st.image(str(image_path), width="stretch")
+            
+            with col2:
+                st.markdown("**2. Defect Heatmap**")
+                if heatmap_path.exists():
+                    st.image(str(heatmap_path), width="stretch")
+                else:
+                    st.image(str(image_path), width="stretch")
+            
+            with col3:
+                st.markdown("**3. Numbered Markers**")
+                if annotated_path.exists():
+                    st.image(str(annotated_path), width="stretch")
+                else:
+                    st.image(str(image_path), width="stretch")
+            
+            # Legend for markers
+            if defects:
+                legend_text = "**Legend:** "
+                for i, defect in enumerate(defects, 1):
+                    severity = defect.get("safety_impact", "UNKNOWN")
+                    defect_type = defect.get("type", "unknown")
+                    severity_emoji = {"CRITICAL": "🔴", "MODERATE": "🟡", "COSMETIC": "🔵"}.get(severity, "⚪")
+                    legend_text += f"**#{i}** = {defect_type.title()} ({severity_emoji}) &nbsp;&nbsp; "
+                st.markdown(legend_text, unsafe_allow_html=True)
+                
         except Exception as e:
-            logger.error(f"Failed to display comparison images: {e}")
+            logger.error(f"Failed to display 3-panel images: {e}")
             st.image(str(image_path), caption="📷 Uploaded Image")
     else:
         st.warning(f"Original image not available for comparison ({image_path or 'unknown path'})")
+    
+    st.divider()
+    
+    # Safety Gates Evaluation Section (ALL gates)
+    gate_results = verdict.get("defect_summary", {}).get("all_gate_results", [])
+    if gate_results:
+        with st.expander("🔒 Safety Gates Evaluation (All Gates)", expanded=True):
+            for gate in gate_results:
+                passed = gate.get("passed", True)
+                gate_name = gate.get("display_name", gate.get("gate_id", "Unknown"))
+                message = gate.get("message", "")
+                
+                if passed:
+                    st.markdown(f"✅ **{gate_name}**: {message}")
+                else:
+                    st.markdown(f"❌ **{gate_name}**: {message}")
+    
+    # Disagreement Analysis (if models disagree)
+    if not consensus.get("models_agree", True):
+        st.warning("⚠️ **Model Disagreement Detected**")
+        
+        inspector_defects = len(results.get("inspector_result", {}).get("defects", []))
+        auditor_defects = len(results.get("auditor_result", {}).get("defects", []))
+        
+        disagree_col1, disagree_col2 = st.columns(2)
+        with disagree_col1:
+            st.metric("Inspector Found", f"{inspector_defects} defect(s)")
+        with disagree_col2:
+            st.metric("Auditor Found", f"{auditor_defects} defect(s)")
+        
+        st.info(f"""
+        **Disagreement Details:**
+        - Agreement Score: {consensus.get('agreement_score', 0):.0%}
+        - {consensus.get('disagreement_details', 'Defect count mismatch between models')}
+        - Resolution: Combined {defect_count} unique defects from both models
+        """)
     
     st.divider()
     
@@ -545,13 +887,13 @@ def display_inspection_results(results: Dict[str, Any]):
                 "Defects Found",
                 "Confidence Level"
             ],
-            "Inspector (Qwen2-VL)": [
+            "Inspector (Qwen2.5-VL)": [
                 str(inspector.get("object_identified", "N/A")),
                 str(inspector.get("overall_condition", "N/A")),
                 str(len(inspector.get("defects", []))),
                 str(inspector.get("overall_confidence", "N/A"))
             ],
-            "Auditor (Qwen2-VL)": [
+            "Auditor (Llama 4 Maverick)": [
                 str(auditor.get("object_identified", "N/A")),
                 str(auditor.get("overall_condition", "N/A")),
                 str(len(auditor.get("defects", []))),
@@ -568,10 +910,7 @@ def display_inspection_results(results: Dict[str, Any]):
         
         report_path = Path(results["report_path"])
         
-        # Action buttons
-        col1, col2, col3 = st.columns([2, 2, 1])
-        
-        # Action buttons
+        # Action buttons (removed duplicate column definition)
         col1, col2 = st.columns([1, 1])
         
         with col1:

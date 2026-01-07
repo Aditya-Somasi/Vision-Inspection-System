@@ -151,7 +151,8 @@ def draw_bounding_boxes(
     output_path: Path
 ) -> Path:
     """
-    Draw bounding boxes with labels on image.
+    Draw PRECISE bounding boxes with labels on image.
+    Uses corner markers and crosshairs for small defects.
     
     Args:
         image_path: Path to original image
@@ -166,55 +167,99 @@ def draw_bounding_boxes(
     if img is None:
         raise ValueError(f"Failed to load image: {image_path}")
     
+    img_height, img_width = img.shape[:2]
+    
+    # VLM models receive images resized to max 1024px
+    # We need to scale coordinates from model space to original image space
+    MODEL_MAX_SIZE = 1024
+    original_max_dim = max(img_width, img_height)
+    if original_max_dim > MODEL_MAX_SIZE:
+        scale_factor = original_max_dim / MODEL_MAX_SIZE
+    else:
+        scale_factor = 1.0
+    
     for i, box in enumerate(boxes):
-        # Get coordinates
-        x = int(box.get("x", 0))
-        y = int(box.get("y", 0))
-        w = int(box.get("width", 100))
-        h = int(box.get("height", 100))
+        # Get coordinates from model
+        raw_x = box.get("x", 0)
+        raw_y = box.get("y", 0)
+        raw_w = box.get("width", 100)
+        raw_h = box.get("height", 100)
         
-        # Get styling
-        label = box.get("label", f"Defect {i+1}")
+        # Scale coordinates
+        x = max(0, int(raw_x * scale_factor))
+        y = max(0, int(raw_y * scale_factor))
+        w = int(raw_w * scale_factor)
+        h = int(raw_h * scale_factor)
+        
+        # Clamp to image bounds
+        x = min(x, img_width - 10)
+        y = min(y, img_height - 10)
+        w = min(w, img_width - x)
+        h = min(h, img_height - y)
+        
+        # Extract label specific info
+        # Extract just the number from label "#1" -> "1"
+        label_full = box.get("label", f"#{i+1}")
+        try:
+            # Try to extract number if format is "#N"
+            label_text = label_full.replace("#", "")
+        except:
+            label_text = str(i+1)
+            
         severity = box.get("severity", "MODERATE")
         
-        # Color by severity
-        colors = {
-            "CRITICAL": (0, 0, 255),    # Red
-            "MODERATE": (0, 165, 255),  # Orange
-            "COSMETIC": (0, 255, 255)   # Yellow
-        }
-        color = colors.get(severity, (0, 255, 0))
-        thickness = 3 if severity == "CRITICAL" else 2
+        # PROFESSIONAL STYLE:
+        # 1. Thin red bounding box (or based on severity, but user asked for red style)
+        # 2. White circular marker with red border
+        # 3. Black number inside
         
-        # Draw rectangle
-        cv2.rectangle(img, (x, y), (x + w, y + h), color, thickness)
+        # Box color - User requested Red thin line. 
+        # We'll use Red for critical/moderate to keep it standard, maybe Orange for cosmetic?
+        # Actually standardizing on Red/Orange makes it look cleaner like the reference
+        box_color = (0, 0, 255) # Red for high visibility standard
         
-        # Draw label background
-        label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-        cv2.rectangle(
-            img,
-            (x, y - label_size[1] - 10),
-            (x + label_size[0] + 10, y),
-            color,
-            -1
-        )
+        if severity == "COSMETIC":
+            box_color = (0, 200, 255) # Yellow-ish for cosmetic
+            
+        thickness = 2
         
-        # Draw label text
-        cv2.putText(
-            img,
-            label,
-            (x + 5, y - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            2
-        )
-    
+        # Draw bounding box
+        cv2.rectangle(img, (x, y), (x + w, y + h), box_color, thickness)
+        
+        # Draw Circular Marker (#1, #2)
+        # Position: Top-left corner of the box usually, unless box is tiny then center
+        marker_radius = int(max(img_width, img_height) * 0.04) # Dynamic size 4% of image
+        marker_radius = max(35, min(marker_radius, 80)) # Clamp size (min 35px, max 80px)
+        
+        # Determine marker position
+        if w < 50 or h < 50:
+             # Tiny box -> Center marker
+             marker_cx = x + w // 2
+             marker_cy = y + h // 2
+        else:
+             # Normal box -> Top left corner, slightly offset inside
+             marker_cx = x + marker_radius + 5
+             marker_cy = y + marker_radius + 5
+             
+        # Draw white filled circle
+        cv2.circle(img, (marker_cx, marker_cy), marker_radius, (255, 255, 255), -1)
+        
+        # Draw red border on circle
+        cv2.circle(img, (marker_cx, marker_cy), marker_radius, box_color, 3)
+        
+        # Draw number
+        font_scale = marker_radius / 20.0 * 0.7
+        thickness_text = max(2, int(font_scale * 2))
+        
+        text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness_text)[0]
+        text_x = int(marker_cx - text_size[0] / 2)
+        text_y = int(marker_cy + text_size[1] / 2)
+        
+        cv2.putText(img, label_text, (text_x, text_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness_text)
+                   
     # Save annotated image
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), img)
-    logger.info(f"Saved annotated image: {output_path}")
-    
     return output_path
 
 
@@ -245,32 +290,32 @@ def create_heatmap_overlay(
     
     height, width = img.shape[:2]
     
-    # Overlay for heatmap effect - reduced opacity for more subtle highlighting
-    overlay = img.copy()
-    alpha = 0.4  # Lower opacity to make highlights less misleading if coordinates are approximate
+    # VLM models receive images resized to max 1024px
+    # Scale coordinates from model space to original image space
+    MODEL_MAX_SIZE = 1024
+    original_max_dim = max(width, height)
+    if original_max_dim > MODEL_MAX_SIZE:
+        scale_factor = original_max_dim / MODEL_MAX_SIZE
+    else:
+        scale_factor = 1.0
+        
+    # Initialize blank mask for heatmap (float 0-1)
+    # We will accumulate "heat" on this mask
+    heat_mask = np.zeros((height, width), dtype=np.float32)
     
-    for i, defect in enumerate(defects):
+    has_defects = False
+    
+    for defect in defects:
+        has_defects = True
         bbox = defect.get("bbox", {})
         severity = defect.get("safety_impact", "MODERATE")
-        defect_type = defect.get("type", "DEFECT").upper()
-        location = defect.get("location", "").lower()
         
-        # Choose color based on severity
-        if severity == "CRITICAL":
-            color = (0, 0, 255)     # Red BGR
-            glow_color = (50, 50, 255)
-        elif severity == "MODERATE":
-            color = (0, 140, 255)   # Orange BGR
-            glow_color = (50, 160, 255)
-        else:
-            color = (0, 200, 255)   # Yellow BGR
-            glow_color = (50, 220, 255)
+        # Determine heat intensity based on severity
+        intensity = 1.0 if severity == "CRITICAL" else 0.7 if severity == "MODERATE" else 0.4
         
-        
-        # Check if defect is truly widespread (NO bbox provided AND explicit language)
-        # Only trigger this if VLM explicitly can't localize + uses words like "entire" or "everywhere"
+        # Check for widespread defects (no bbox)
         widespread_keywords = ["entire surface", "everywhere", "whole component", "complete surface"]
-        location_lower = location.lower()
+        location_lower = defect.get("location", "").lower()
         
         has_valid_bbox = (bbox and 
                          bbox.get("x") is not None and 
@@ -282,135 +327,76 @@ def create_heatmap_overlay(
                         any(kw in location_lower for kw in widespread_keywords))
         
         if is_widespread:
-            # CREATE GENERAL OVERLAY for widespread defects
-            # Avoid specific markers (1a, 1b) which can be misleading if placement is arbitrary
-            
-            # Create a semi-transparent overlay over the entire image (or significant portion)
-            # Use a vignette-style gradient to highlight the center but cover mostly everything
-            gradient = np.zeros((height, width, 3), dtype=np.uint8)
-            
-            # Draw a large filled circle covering most of the image
+            # Add general heat to the center area
             center_x, center_y = width // 2, height // 2
-            radius = int(min(width, height) * 0.4)
-            cv2.circle(gradient, (center_x, center_y), radius, color, -1)
-            
-            # Apply heavy blur to make it a soft glow
-            gradient = cv2.GaussianBlur(gradient, (151, 151), 0)
-            
-            # Blend lightly
-            overlay = cv2.addWeighted(overlay, 1.0, gradient, 0.4, 0)
-            
-            # Add a single central label
-            label = f"#{i+1}"
-            cv2.circle(overlay, (center_x, center_y), 30, (255, 255, 255), -1)
-            cv2.putText(overlay, label, (center_x - 10, center_y + 10), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 2)
-            
-            # Add defect info text at top with "WIDESPREAD" indicator
-            info_text = f"#{i+1} {defect_type} - {severity} (WIDESPREAD / ENTIRE SURFACE)"
-            
-            # Scale text box based on image width
-            text_scale = max(width / 1000.0, 1.0)
-            box_h = int(35 * text_scale)
-            cv2.rectangle(overlay, (10, i * box_h + 5), (width - 10, i * box_h + box_h), (0, 0, 0), -1)
-            cv2.putText(overlay, info_text, (15, i * box_h + int(box_h*0.7)), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, (255, 255, 255), 1)
+            axes = (int(width * 0.4), int(height * 0.4))
+            cv2.ellipse(heat_mask, (center_x, center_y), axes, 0, 0, 360, intensity, -1)
             continue
-        
-        # Extract coordinates
-        x = int(bbox.get("x", 0))
-        y = int(bbox.get("y", 0))
-        w = int(bbox.get("width", 100))
-        h = int(bbox.get("height", 100))
-        
-        # Add generous padding (30%) to account for VLM bbox imprecision
-        padding_x = int(w * 0.3)
-        padding_y = int(h * 0.3)
-        x = max(0, x - padding_x)
-        y = max(0, y - padding_y)
-        w = min(width - x, w + 2 * padding_x)
-        h = min(height - y, h + 2 * padding_y)
-        
-        # Draw filled rectangle (the heatmap effect) - more transparent
-        cv2.rectangle(overlay, (x, y), (x + w, y + h), color, -1)
-        
-        # Draw bright border for visibility
-        cv2.rectangle(overlay, (x, y), (x + w, y + h), color, 3)
-        
-        # Draw glow border for critical defects
-        if severity == "CRITICAL":
-            for offset in range(1, 6):
-                alpha_border = 0.8 - (offset * 0.15)
-                cv2.rectangle(overlay, 
-                            (x - offset, y - offset), 
-                            (x + w + offset, y + h + offset), 
-                            glow_color, 2)
-        
-        # Draw defect number marker
-        label = f"#{i + 1}"
-        marker_size = 20
-        cv2.circle(overlay, (x + marker_size, y + marker_size), marker_size, (255, 255, 255), -1)
-        cv2.putText(overlay, label, (x + marker_size - 8, y + marker_size + 6), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-        
-        # Add defect type label INSIDE the box
-        type_label = defect_type[:15]  # Truncate if too long
-        label_y = y + h - 10
-        label_x = x + 5
-        
-        # Background for label
-        text_size = cv2.getTextSize(type_label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-        cv2.rectangle(overlay, (label_x - 2, label_y - text_size[1] - 2), 
-                     (label_x + text_size[0] + 2, label_y + 2), (0, 0, 0), -1)
-        
-        # Label text
-        cv2.putText(overlay, type_label, (label_x, label_y), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            
+        if has_valid_bbox:
+            # Extract and scale coordinates
+            raw_x = bbox.get("x", 0)
+            raw_y = bbox.get("y", 0)
+            raw_w = bbox.get("width", 100)
+            raw_h = bbox.get("height", 100)
+            
+            x = int(raw_x * scale_factor)
+            y = int(raw_y * scale_factor)
+            w = int(raw_w * scale_factor)
+            h = int(raw_h * scale_factor)
+            
+            # Center of the defect
+            center_x = x + w // 2
+            center_y = y + h // 2
+            
+            # Draw an ellipse for the hotspot (more natural than rectangle)
+            # Size proportional to the defect area, but enforce a minimum size for visibility
+            min_dim = min(width, height)
+            min_axis = int(min_dim * 0.08) # Min 8% of image size
+            
+            axis_x = max(int(w * 0.8), min_axis)
+            axis_y = max(int(h * 0.8), min_axis)
+            
+            axes = (axis_x, axis_y)
+            cv2.ellipse(heat_mask, (center_x, center_y), axes, 0, 0, 360, intensity, -1)
+
+    if not has_defects:
+        # Just save original if no defects
+        cv2.imwrite(str(output_path), img)
+        return output_path
+
+    # Apply heavy Gaussian blur to create the smooth thermal gradient look
+    # Blur size proportional to image size
+    blur_ksize = int(min(width, height) * 0.15) | 1  # Must be odd
+    heat_mask = cv2.GaussianBlur(heat_mask, (blur_ksize, blur_ksize), 0)
     
-    # Blend overlay with original
-    result = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
+    # Normalize mask to 0-255 range for colormap application
+    heat_mask_norm = cv2.normalize(heat_mask, None, 0, 255, cv2.NORM_MINMAX)
+    heat_mask_uint8 = heat_mask_norm.astype(np.uint8)
     
-    # Dynamic scaling for legend based on image width
-    # Base reference width is 1000px
-    scale_factor = max(width / 1000.0, 1.0)
+    # Apply JET colormap (Classic thermal look: Blue -> Cyan -> Yellow -> Red)
+    heatmap_color = cv2.applyColorMap(heat_mask_uint8, cv2.COLORMAP_JET)
     
-    legend_height = int(40 * scale_factor)
-    font_scale = 0.5 * scale_factor
-    box_width = int(20 * scale_factor)
-    box_height = int(20 * scale_factor)
-    padding = int(10 * scale_factor)
-    text_offset = int(5 * scale_factor)
-    spacing = int(140 * scale_factor)
+    # Create an opacity mask where there is heat (so cold/blue areas don't darken the image)
+    # We want "no heat" to be transparent, not blue
+    # The mask itself (before colormap) is perfect for opacity
+    opacity = heat_mask.copy()
+    np.clip(opacity, 0, 0.6, out=opacity) # Cap opacity at 0.6
     
-    legend = np.zeros((legend_height, width, 3), dtype=np.uint8)
-    legend.fill(30)  # Dark gray background
+    # Blend manually for better control
+    # destination = src1 * (1 - alpha) + src2 * alpha
+    heatmap_overlay = img.copy()
     
-    # Draw legend items
-    legend_items = [
-        ((0, 0, 255), "CRITICAL"),
-        ((0, 140, 255), "MODERATE"),
-        ((0, 200, 255), "COSMETIC")
-    ]
-    
-    x_pos = int(20 * scale_factor)
-    y_box_top = int((legend_height - box_height) / 2)
-    y_text_base = int((legend_height + box_height) / 2) - text_offset
-    
-    for color, text in legend_items:
-        cv2.rectangle(legend, (x_pos, y_box_top), (x_pos + box_width, y_box_top + box_height), color, -1)
-        cv2.putText(legend, text, (x_pos + box_width + padding, y_text_base), 
-                   cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
-        x_pos += spacing
-    
-    # Combine result with legend
-    result_with_legend = np.vstack([result, legend])
-    
-    # Save
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(output_path), result_with_legend)
-    logger.info(f"Saved heatmap overlay: {output_path}")
+    for c in range(3):
+        heatmap_overlay[:, :, c] = (
+            img[:, :, c] * (1.0 - opacity) + 
+            heatmap_color[:, :, c] * opacity
+        )
+        
+    cv2.imwrite(str(output_path), heatmap_overlay)
     
     return output_path
+
 
 
 def create_side_by_side_comparison(
