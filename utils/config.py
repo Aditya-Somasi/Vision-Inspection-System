@@ -27,10 +27,20 @@ class Config(BaseSettings):
     )
     
     # ========================
+    # Groq Configuration (for Explainer)
+    # ========================
+    groq_api_key: Optional[str] = Field(default=None, alias="GROQ_API_KEY")
+    
+    # ========================
+    # Google Gemini Configuration (OPTIONAL - not used by default)
+    # ========================
+    google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
+    
+    # ========================
     # VLM Model Configuration
     # ========================
     vlm_inspector_model: str = Field(
-        default="Qwen/Qwen2-VL-7B-Instruct",
+        default="Qwen/Qwen2.5-VL-7B-Instruct",
         alias="VLM_INSPECTOR_MODEL"
     )
     vlm_inspector_temperature: float = Field(
@@ -42,8 +52,10 @@ class Config(BaseSettings):
         alias="VLM_INSPECTOR_MAX_TOKENS"
     )
     
+    # Auditor model - Using Qwen (Llama 3.2 Vision requires provider billing on HF)
+    # To use Llama: Set up Together AI billing at huggingface.co/settings/billing
     vlm_auditor_model: str = Field(
-        default="meta-llama/Llama-3.2-11B-Vision-Instruct",
+        default="Qwen/Qwen2.5-VL-7B-Instruct",
         alias="VLM_AUDITOR_MODEL"
     )
     vlm_auditor_temperature: float = Field(
@@ -56,7 +68,7 @@ class Config(BaseSettings):
     )
     
     explainer_model: str = Field(
-        default="meta-llama/Llama-3.1-8B-Instruct",
+        default="llama-3.3-70b-versatile",
         alias="EXPLAINER_MODEL"
     )
     explainer_temperature: float = Field(

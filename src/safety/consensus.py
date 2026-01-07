@@ -72,6 +72,13 @@ class ConsensusAnalyzer:
             0.1 * confidence_agreement
         )
         
+        # Round to 4 decimals to avoid floating point precision issues (e.g., 99.99999%)
+        agreement_score = round(agreement_score, 4)
+        
+        # Clamp to 1.0 if very close
+        if agreement_score >= 0.9999:
+            agreement_score = 1.0
+        
         # Determine if models agree (threshold: 0.7)
         models_agree = agreement_score >= 0.7
         

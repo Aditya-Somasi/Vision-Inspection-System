@@ -1,104 +1,113 @@
 """
-Base VLM Agent class with retry logic and error handling.
+Base VLM Agent class using LangChain for unified provider interface.
+Provides common functionality for all VLM agents with LangChain integration.
 """
 
 import base64
 import json
-import time
-import requests
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, List, Union
+from abc import ABC, abstractmethod
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.language_models import BaseChatModel
 
 from utils.logger import setup_logger
 from utils.config import config
 
 
-class BaseVLMAgent:
-    """Base class for VLM agents with retry logic and error handling."""
+class BaseVLMAgent(ABC):
+    """
+    Base class for VLM agents using LangChain.
+    Provides unified interface for different LLM providers.
+    """
     
     def __init__(
         self,
-        model_id: str,
-        temperature: float,
-        max_tokens: int,
-        nickname: str
+        llm: BaseChatModel,
+        nickname: str,
+        is_vision: bool = True
     ):
-        self.model_id = model_id
-        self.temperature = temperature
-        self.max_tokens = max_tokens
+        """
+        Initialize the VLM agent.
+        
+        Args:
+            llm: LangChain chat model instance
+            nickname: Human-readable name for logging
+            is_vision: Whether this is a vision model
+        """
+        self.llm = llm
         self.nickname = nickname
-        self.api_endpoint = f"{config.huggingface_api_endpoint}/{model_id}"
-        self.headers = {"Authorization": f"Bearer {config.huggingface_api_key}"}
+        self.is_vision = is_vision
+        
         self.logger = setup_logger(
             f"agent.{nickname}",
             level=config.log_level,
             component=nickname.upper()
         )
     
-    def _encode_image(self, image_path: Path) -> str:
-        """Encode image to base64."""
-        with open(image_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("utf-8")
-    
-    def _call_api(self, payload: dict, retries: Optional[int] = None) -> dict:
+    def _encode_image_to_base64(self, image_path: Path) -> str:
         """
-        Call HuggingFace API with retry logic.
+        Encode local image file to base64 data URI.
         
         Args:
-            payload: Request payload
-            retries: Number of retries (defaults to config)
-        
+            image_path: Path to image file
+            
         Returns:
-            API response
-        
-        Raises:
-            Exception if all retries fail
+            Base64 data URI string
         """
-        retries = retries or config.api_max_retries
-        last_error = None
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
         
-        for attempt in range(retries):
-            try:
-                self.logger.debug(f"API call attempt {attempt + 1}/{retries}")
-                
-                response = requests.post(
-                    self.api_endpoint,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=config.api_timeout
-                )
-                
-                if response.status_code == 200:
-                    self.logger.debug("API call successful")
-                    return response.json()
-                
-                elif response.status_code == 503:
-                    # Model loading, wait and retry
-                    wait_time = config.api_retry_backoff ** attempt
-                    self.logger.warning(
-                        f"Model loading, waiting {wait_time}s before retry..."
-                    )
-                    time.sleep(wait_time)
-                    continue
-                
-                else:
-                    error_msg = f"API error {response.status_code}: {response.text}"
-                    self.logger.error(error_msg)
-                    last_error = Exception(error_msg)
-            
-            except requests.Timeout:
-                wait_time = config.api_retry_backoff ** attempt
-                self.logger.warning(f"Request timeout, retrying in {wait_time}s...")
-                time.sleep(wait_time)
-                last_error = Exception("Request timeout")
-            
-            except Exception as e:
-                self.logger.error(f"Unexpected error: {e}")
-                last_error = e
+        suffix = image_path.suffix.lower()
+        mime_types = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".gif": "image/gif",
+            ".webp": "image/webp",
+            ".bmp": "image/bmp"
+        }
+        mime_type = mime_types.get(suffix, "image/jpeg")
         
-        # All retries failed
-        self.logger.error(f"All {retries} API call attempts failed")
-        raise last_error or Exception("API call failed after all retries")
+        base64_str = base64.b64encode(image_bytes).decode("utf-8")
+        return f"data:{mime_type};base64,{base64_str}"
+    
+    def _build_vision_message(
+        self,
+        prompt: str,
+        image_source: Union[str, Path]
+    ) -> HumanMessage:
+        """
+        Build a vision message with text and image.
+        
+        Args:
+            prompt: Text prompt
+            image_source: Either a URL string or Path to local file
+            
+        Returns:
+            LangChain HumanMessage with multimodal content
+        """
+        # Determine if it's a URL or local file
+        if isinstance(image_source, Path) or (
+            isinstance(image_source, str) and not image_source.startswith("http")
+        ):
+            image_path = Path(image_source)
+            if not image_path.exists():
+                raise FileNotFoundError(f"Image not found: {image_path}")
+            image_url = self._encode_image_to_base64(image_path)
+        else:
+            image_url = image_source
+        
+        return HumanMessage(
+            content=[
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url}
+                }
+            ]
+        )
     
     def _parse_json_response(self, text: str) -> dict:
         """
@@ -106,11 +115,10 @@ class BaseVLMAgent:
         
         Args:
             text: Raw response text
-        
+            
         Returns:
             Parsed JSON dict
         """
-        # Remove markdown code blocks if present
         text = text.strip()
         if text.startswith("```json"):
             text = text[7:]
@@ -121,37 +129,21 @@ class BaseVLMAgent:
         
         text = text.strip()
         
+        # Try to find JSON in text
+        start_idx = text.find("{")
+        end_idx = text.rfind("}") + 1
+        
+        if start_idx != -1 and end_idx > start_idx:
+            text = text[start_idx:end_idx]
+        
         try:
             return json.loads(text)
         except json.JSONDecodeError as e:
             self.logger.error(f"JSON parsing failed: {e}")
-            self.logger.debug(f"Raw text: {text}")
+            self.logger.debug(f"Raw text: {text[:500]}...")
             raise ValueError(f"Failed to parse JSON response: {e}")
     
+    @abstractmethod
     def health_check(self) -> bool:
-        """
-        Perform health check on the model API.
-        
-        Returns:
-            True if model is healthy
-        """
-        try:
-            self.logger.info(f"Health check: {self.model_id}")
-            
-            # Simple API call to check availability
-            payload = {
-                "inputs": "test",
-                "parameters": {"max_new_tokens": 10}
-            }
-            
-            response = self._call_api(payload, retries=1)
-            
-            if response:
-                self.logger.info(f"✓ {self.nickname} is healthy")
-                return True
-            
-            return False
-        
-        except Exception as e:
-            self.logger.error(f"✗ {self.nickname} health check failed: {e}")
-            return False
+        """Perform health check on the model API."""
+        pass

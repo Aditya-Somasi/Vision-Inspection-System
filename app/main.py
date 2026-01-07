@@ -198,14 +198,12 @@ def main():
         # Run health checks
         if not startup_health_checks():
             logger.error("❌ Startup health checks failed.")
-            
-            if config.is_production:
-                logger.error("   Cannot start in PRODUCTION mode with failed health checks.")
-                logger.error("   Please fix the errors and try again.")
-                sys.exit(1)
-            else:
-                logger.warning("   Starting anyway (DEVELOPMENT mode)")
-                logger.warning("   Some features may not work correctly.")
+            logger.error("   Cannot start with failed health checks.")
+            logger.error("   Please fix the errors above and try again.")
+            logger.error("")
+            logger.error("   To bypass health checks (NOT RECOMMENDED), set:")
+            logger.error("   SKIP_HEALTH_CHECKS=true in .env")
+            sys.exit(1)
     
     # Launch Streamlit UI
     logger.info("🚀 Launching Streamlit UI...")

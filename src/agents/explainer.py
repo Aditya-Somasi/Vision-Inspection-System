@@ -1,10 +1,12 @@
 """
-Explainer Agent using Llama 3.1 for natural language explanations.
+Explainer Agent using Groq for fast text generation.
+Uses LangChain's ChatGroq wrapper for natural language explanations.
 """
 
 import json
-import time
-import requests
+
+from langchain_groq import ChatGroq
+from langchain_core.messages import HumanMessage
 
 from src.schemas.models import VLMAnalysisResult
 from utils.config import config
@@ -15,55 +17,25 @@ from utils.prompts import EXPLAINER_PROMPT
 class ExplainerAgent:
     """
     Text-based LLM for generating human-readable explanations.
-    Takes structured findings and produces natural language reports.
+    Uses Groq for ultra-fast inference.
     """
     
     def __init__(self):
-        self.model_id = config.explainer_model
-        self.temperature = config.explainer_temperature
-        self.max_tokens = config.explainer_max_tokens
-        self.api_endpoint = f"{config.huggingface_api_endpoint}/{self.model_id}"
-        self.headers = {"Authorization": f"Bearer {config.huggingface_api_key}"}
+        # Initialize Groq LLM via LangChain
+        self.llm = ChatGroq(
+            model=config.explainer_model,
+            api_key=config.groq_api_key,
+            temperature=config.explainer_temperature,
+            max_tokens=config.explainer_max_tokens
+        )
+        
         self.logger = setup_logger(
             "agent.explainer",
             level=config.log_level,
             component="EXPLAINER"
         )
-    
-    def _call_api(self, payload: dict, retries: int = None) -> dict:
-        """Call HuggingFace API with retry logic."""
-        retries = retries or config.api_max_retries
-        last_error = None
         
-        for attempt in range(retries):
-            try:
-                self.logger.debug(f"API call attempt {attempt + 1}/{retries}")
-                
-                response = requests.post(
-                    self.api_endpoint,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=config.api_timeout
-                )
-                
-                if response.status_code == 200:
-                    return response.json()
-                elif response.status_code == 503:
-                    wait_time = config.api_retry_backoff ** attempt
-                    self.logger.warning(f"Model loading, waiting {wait_time}s...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    error_msg = f"API error {response.status_code}: {response.text}"
-                    self.logger.error(error_msg)
-                    last_error = Exception(error_msg)
-            
-            except Exception as e:
-                self.logger.error(f"API call error: {e}")
-                last_error = e
-                time.sleep(config.api_retry_backoff ** attempt)
-        
-        raise last_error or Exception("API call failed")
+        self.logger.info(f"Initialized Explainer with Groq model: {config.explainer_model}")
     
     def generate_explanation(
         self,
@@ -120,35 +92,25 @@ class ExplainerAgent:
                 "verdict": safety_verdict
             }
             
-            # Build prompt
+            # Build prompt with datetime-safe serialization
+            def serialize_safe(obj):
+                """Convert to JSON-serializable format."""
+                if hasattr(obj, 'isoformat'):
+                    return obj.isoformat()
+                if hasattr(obj, '__dict__'):
+                    return str(obj)
+                return str(obj)
+            
             prompt = EXPLAINER_PROMPT.format(
-                findings=json.dumps(findings, indent=2)
+                findings=json.dumps(findings, indent=2, default=serialize_safe)
             )
             
-            # Prepare payload
-            payload = {
-                "inputs": prompt,
-                "parameters": {
-                    "temperature": self.temperature,
-                    "max_new_tokens": self.max_tokens,
-                    "return_full_text": False
-                }
-            }
+            self.logger.debug("Calling Groq API...")
             
-            self.logger.debug("Calling LLM API...")
-            
-            # Call API
-            response = self._call_api(payload)
-            
-            # Extract text
-            if isinstance(response, list) and len(response) > 0:
-                explanation = response[0].get("generated_text", "")
-            elif isinstance(response, dict):
-                explanation = response.get("generated_text", "")
-            else:
-                explanation = (
-                    "Unable to generate explanation due to unexpected response format."
-                )
+            # Call LLM via LangChain
+            message = HumanMessage(content=prompt)
+            response = self.llm.invoke([message])
+            explanation = response.content
             
             self.logger.info("Explanation generated successfully")
             
@@ -157,7 +119,6 @@ class ExplainerAgent:
         except Exception as e:
             self.logger.error(f"Explanation generation failed: {e}")
             
-            # Fallback explanation
             return (
                 f"Inspection complete. The system detected "
                 f"{len(inspector_result.defects)} defects. "
@@ -166,19 +127,15 @@ class ExplainerAgent:
             )
     
     def health_check(self) -> bool:
-        """Perform health check."""
+        """Perform health check on Groq API."""
         try:
-            self.logger.info(f"Health check: {self.model_id}")
+            self.logger.info(f"Health check: {config.explainer_model} (Groq)")
             
-            payload = {
-                "inputs": "test",
-                "parameters": {"max_new_tokens": 10}
-            }
+            message = HumanMessage(content="Respond with only the word 'OK'")
+            response = self.llm.invoke([message])
             
-            response = self._call_api(payload, retries=1)
-            
-            if response:
-                self.logger.info("✓ Explainer is healthy")
+            if response.content and len(response.content) > 0:
+                self.logger.info("✓ Explainer (Groq) is healthy")
                 return True
             
             return False

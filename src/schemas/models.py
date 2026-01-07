@@ -68,6 +68,13 @@ class VLMAnalysisResult(BaseModel):
     analysis_reasoning: Optional[str] = Field(
         None, description="General reasoning about the image"
     )
+    # Agent-inferred criticality
+    inferred_criticality: Optional[Literal["low", "medium", "high"]] = Field(
+        None, description="Agent-inferred criticality level based on object type and defects"
+    )
+    inferred_criticality_reasoning: Optional[str] = Field(
+        None, description="Reasoning for the inferred criticality level"
+    )
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     
     @property

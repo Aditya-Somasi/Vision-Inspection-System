@@ -18,7 +18,7 @@ PROMPT_VERSION = "1.0.0"
 INSPECTOR_PROMPT = """You are an expert safety inspector analyzing images for defects and damage.
 
 CONTEXT:
-- Criticality Level: {criticality}
+- Criticality Level (User Provided): {criticality}
 - Domain: {domain}
 - User Notes: {user_notes}
 
@@ -27,12 +27,17 @@ YOUR TASK:
 2. Detect ALL visible defects, damage, or abnormalities
 3. For EACH defect, provide:
    - Type (e.g., crack, rust, corrosion, deformation, tear, discoloration)
-   - Specific location description
-   - Bounding box coordinates (x, y, width, height) if possible
+   - Specific location description (e.g., "top-left corner", "center threading area")
+   - ALWAYS provide bounding box coordinates (x, y, width, height) - be as precise as possible
    - Safety impact: CRITICAL, MODERATE, or COSMETIC
    - Detailed reasoning for why this defect is concerning
    - Confidence level: high, medium, or low
    - Recommended action
+
+4. INFER CRITICALITY: Based on the object type and defects found, recommend a criticality level:
+   - HIGH: Safety-critical components (brakes, fasteners, pressure vessels, medical devices)
+   - MEDIUM: Important but not safety-critical (structural components, mechanical parts)
+   - LOW: Non-critical items (decorative, cosmetic, low-risk applications)
 
 SAFETY IMPACT GUIDELINES:
 - CRITICAL: Could cause injury, death, system failure, contamination, or immediate hazard
@@ -55,13 +60,15 @@ Return ONLY valid JSON in this exact format (no other text):
       "location": "threading area, upper-right quadrant",
       "bbox": {{"x": 100, "y": 150, "width": 50, "height": 30}},
       "safety_impact": "CRITICAL",
-      "reasoning": "Cracks in threaded fasteners can cause sudden failure under load, potentially leading to structural collapse or equipment damage",
+      "reasoning": "Cracks in threaded fasteners can cause sudden failure under load",
       "confidence": "high",
       "recommended_action": "Replace immediately - do not use in any load-bearing application"
     }}
   ],
   "overall_confidence": "high" | "medium" | "low",
-  "analysis_reasoning": "General observations about the image and inspection process"
+  "analysis_reasoning": "General observations about the image and inspection process",
+  "inferred_criticality": "high" | "medium" | "low",
+  "inferred_criticality_reasoning": "This is a threaded fastener, commonly used in structural/safety applications"
 }}
 
 If NO defects are found, return empty defects array but still provide thorough reasoning for why the component appears safe."""
@@ -132,29 +139,29 @@ STRUCTURED FINDINGS (AUTHORITATIVE - DO NOT CONTRADICT):
 YOUR TASK:
 Generate a clear, professional explanation of the inspection results for human readers.
 
-REPORT STRUCTURE:
+OUTPUT FORMAT REQUIREMENTS:
+- Use plain text section headers (no markdown ** or ## symbols)
+- Leave a blank line between sections
+- Keep each section to 2-3 sentences maximum
 
-1. EXECUTIVE SUMMARY (2-3 sentences)
-   - What was inspected
-   - Overall finding (safe/unsafe/requires review)
-   - Key reason for verdict
+REQUIRED SECTIONS:
 
-2. INSPECTION DETAILS
-   - What the Inspector found
-   - What the Auditor found
-   - Whether they agreed or disagreed
-   - Confidence levels
+EXECUTIVE SUMMARY
+[2-3 sentences: what was inspected, overall finding, key reasoning]
 
-3. DEFECT ANALYSIS (if defects found)
-   For each defect:
-   - What it is and where it's located
-   - Why it's concerning (safety impact)
-   - What should be done
+INSPECTION DETAILS
+Inspector Findings: [what inspector found]
+Auditor Findings: [what auditor found]
+Agreement: [whether models agreed and confidence level]
 
-4. FINAL RECOMMENDATION
-   - Clear action items
-   - Any uncertainties or caveats
-   - When human review is needed
+DEFECT ANALYSIS
+[If defects: list each with type, location, severity]
+[If no defects: "No defects detected. Component appears in good condition."]
+
+FINAL RECOMMENDATION
+Verdict: [SAFE/UNSAFE/REVIEW_REQUIRED]
+Action Required: [specific action to take]
+Safety Assessment: [brief risk assessment]
 
 WRITING GUIDELINES:
 - Use clear, non-technical language where possible
@@ -162,8 +169,8 @@ WRITING GUIDELINES:
 - Maintain professional tone
 - DO NOT downplay safety concerns
 - DO NOT contradict the structured findings
-- If models disagreed, explain why human review is needed
-- If confidence is low, explicitly state uncertainty
+- DO NOT include raw confidence percentages (shown in metrics table)
+- DO NOT use markdown formatting like ** or ##
 
 FORBIDDEN:
 - Do NOT invent defects not in the structured findings

@@ -1,0 +1,117 @@
+# ============================================================================
+# Safety Rules Configuration
+# ============================================================================
+# This file configures the deterministic safety gates.
+# Agents perform intelligent severity assessment; gates provide defense-in-depth.
+
+# ============================================================================
+# AGENT TRUST SETTINGS
+# ============================================================================
+agent_trust:
+  # Trust the agent's safety_impact assessment (CRITICAL/MODERATE/COSMETIC)
+  trust_agent_severity: true
+  
+  # Only FLAG these types for review (do NOT override agent decision)
+  flag_for_review:
+    enabled: true
+    action: "REQUIRES_HUMAN_REVIEW"  # Not "UNSAFE" - just flag for human
+    # Types that always get flagged regardless of agent's severity
+    always_flag_types: []  # Empty = fully trust agent
+
+# ============================================================================
+# DOMAIN-SPECIFIC RULES
+# ============================================================================
+# Different industries have different risk tolerances
+domains:
+  aerospace:
+    description: "Zero tolerance for structural defects"
+    zero_tolerance_types:
+      - crack
+      - fatigue
+      - delamination
+    require_human_review_always: true
+    
+  medical:
+    description: "Patient safety critical"
+    zero_tolerance_types:
+      - contamination
+      - crack
+      - corrosion
+    require_human_review_always: true
+    
+  automotive:
+    description: "Safety critical components"
+    zero_tolerance_types:
+      - crack
+      - fracture
+      - structural_damage
+    require_human_review_always: false
+    
+  food_processing:
+    description: "Contamination prevention"
+    zero_tolerance_types:
+      - contamination
+      - foreign_object
+      - mold
+      - discoloration
+    require_human_review_always: false
+    
+  general:
+    description: "Default rules"
+    zero_tolerance_types: []
+    require_human_review_always: false
+
+# ============================================================================
+# GATE CONFIGURATIONS
+# ============================================================================
+
+# Gate 1: Critical Defect (Agent-determined)
+critical_defects:
+  enabled: true
+  # Use agent's safety_impact=CRITICAL, not hardcoded types
+  trust_agent_classification: true
+  verdict: "UNSAFE"
+
+# Gate 2: Model Agreement
+model_agreement:
+  enabled: true
+  required: true
+  min_agreement_score: 0.7
+  verdict_on_disagree: "REQUIRES_HUMAN_REVIEW"
+
+# Gate 3: Confidence Thresholds
+confidence:
+  high_threshold: 0.85
+  low_threshold: 0.5
+  require_high_for_safe: true
+  verdict_on_low: "REQUIRES_HUMAN_REVIEW"
+
+# Gate 4: Defect Count Limits
+defect_limits:
+  max_auto_approve: 2
+  verdict_on_exceed: "REQUIRES_HUMAN_REVIEW"
+
+# Gate 5: Criticality Bias
+criticality_rules:
+  high:
+    require_human_review_if_any_defect: true
+    require_high_confidence: true
+  medium:
+    require_human_review_if_critical: true
+  low:
+    auto_approve_cosmetic: true
+
+# Gate 6: No Defects
+no_defects:
+  require_agreement: true
+  min_confidence: 0.7
+  verdict: "SAFE"
+
+# ============================================================================
+# HUMAN REVIEW
+# ============================================================================
+human_review:
+  enabled: true
+  sla_minutes: 120
+  escalation_on_timeout: true
+  urgent_sla_minutes: 30  # For high criticality

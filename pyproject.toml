@@ -55,6 +55,10 @@ dependencies = [
     # Logging
     "colorlog>=6.7.0",
     "rich>=13.7.0",
+    "langgraph-checkpoint-sqlite>=3.0.1",
+    "huggingface-hub>=0.36.0",
+    "langchain-huggingface>=1.2.0",
+    "groq>=1.0.0",
 ]
 
 [project.optional-dependencies]

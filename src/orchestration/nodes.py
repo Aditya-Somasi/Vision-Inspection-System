@@ -59,6 +59,27 @@ def run_inspector(state: InspectionState) -> InspectionState:
         # Store result as dict
         state["inspector_result"] = result.model_dump()
         
+        # Apply agent-inferred criticality if provided
+        if result.inferred_criticality:
+            user_criticality = context.criticality
+            inferred = result.inferred_criticality
+            
+            if user_criticality != inferred:
+                logger.info(
+                    f"Agent inferred criticality '{inferred}' differs from user's '{user_criticality}'"
+                )
+                # Update context with inferred criticality (agent overrides user if higher)
+                criticality_order = {"low": 0, "medium": 1, "high": 2}
+                if criticality_order.get(inferred, 1) > criticality_order.get(user_criticality, 1):
+                    logger.warning(
+                        f"Upgrading criticality from '{user_criticality}' to '{inferred}' "
+                        f"based on agent analysis: {result.inferred_criticality_reasoning}"
+                    )
+                    state["context"]["criticality"] = inferred
+                    state["context"]["criticality_upgraded"] = True
+                    state["context"]["original_criticality"] = user_criticality
+                    state["context"]["upgrade_reason"] = result.inferred_criticality_reasoning
+        
         logger.info(f"Inspector found {len(result.defects)} defects")
         
     except Exception as e:
@@ -164,10 +185,64 @@ def evaluate_safety_node(state: InspectionState) -> InspectionState:
 def human_review_node(state: InspectionState) -> InspectionState:
     """
     Human review decision point.
-    This node will interrupt the workflow for human input.
+    This node uses interrupt() to pause the workflow for human input.
+    
+    The workflow will pause here and wait for the user to provide:
+    - decision: "APPROVE", "REJECT", or "MODIFY"
+    - notes: Optional additional notes
     """
-    logger.warning("Human review required - workflow paused")
+    from langgraph.types import interrupt
+    
+    logger.warning("Human review required - workflow pausing for input")
     state["current_step"] = "awaiting_human_review"
+    
+    # Prepare review context for the user
+    safety_verdict = state.get("safety_verdict", {})
+    consensus = state.get("consensus", {})
+    defects = consensus.get("combined_defects", [])
+    
+    review_context = {
+        "type": "human_review_required",
+        "reason": safety_verdict.get("triggered_gates", ["Safety gate triggered"]),
+        "verdict": safety_verdict.get("verdict", "UNKNOWN"),
+        "defects": [
+            {
+                "type": d.get("type"),
+                "severity": d.get("safety_impact"),
+                "location": d.get("location"),
+                "reasoning": d.get("reasoning")
+            }
+            for d in defects
+        ],
+        "models_agree": consensus.get("models_agree", False),
+        "agreement_score": consensus.get("agreement_score", 0),
+        "options": ["APPROVE", "REJECT", "MODIFY"],
+        "message": "Please review the inspection findings and provide your decision."
+    }
+    
+    # INTERRUPT - workflow pauses here until user provides input
+    human_input = interrupt(review_context)
+    
+    # Process human input when workflow resumes
+    if isinstance(human_input, dict):
+        state["human_decision"] = human_input.get("decision", "APPROVE")
+        state["human_notes"] = human_input.get("notes", "")
+        
+        # Update verdict based on human decision
+        if human_input.get("decision") == "REJECT":
+            state["safety_verdict"]["verdict"] = "UNSAFE"
+            state["safety_verdict"]["human_override"] = True
+        elif human_input.get("decision") == "APPROVE":
+            state["safety_verdict"]["verdict"] = "SAFE"
+            state["safety_verdict"]["human_override"] = True
+        # MODIFY keeps original verdict but adds notes
+    else:
+        # Simple string input
+        state["human_decision"] = str(human_input)
+        state["human_notes"] = ""
+    
+    logger.info(f"Human review complete: {state['human_decision']}")
+    state["current_step"] = "human_review_complete"
     
     return state
 

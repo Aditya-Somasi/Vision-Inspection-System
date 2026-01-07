@@ -2,20 +2,20 @@
 Agent factory and exports for Vision Inspection System.
 """
 
-from src.agents.inspector import InspectorAgent
-from src.agents.auditor import AuditorAgent
+from src.agents.vlm_inspector import VLMInspectorAgent, InspectorAgent
+from src.agents.vlm_auditor import VLMAuditorAgent, AuditorAgent
 from src.agents.explainer import ExplainerAgent
 from utils.config import config
 
 
-def get_inspector() -> InspectorAgent:
+def get_inspector() -> VLMInspectorAgent:
     """Get Inspector agent instance."""
-    return InspectorAgent()
+    return VLMInspectorAgent()
 
 
-def get_auditor() -> AuditorAgent:
+def get_auditor() -> VLMAuditorAgent:
     """Get Auditor agent instance."""
-    return AuditorAgent()
+    return VLMAuditorAgent()
 
 
 def get_explainer() -> ExplainerAgent:
@@ -36,39 +36,41 @@ def health_check_agents() -> dict:
     try:
         inspector = get_inspector()
         status = inspector.health_check()
-        results["Inspector (Qwen2-VL)"] = (
+        results["Inspector (HuggingFace)"] = (
             status,
             f"Model: {config.vlm_inspector_model}" if status else "Connection failed"
         )
     except Exception as e:
-        results["Inspector (Qwen2-VL)"] = (False, f"Error: {e}")
+        results["Inspector (HuggingFace)"] = (False, f"Error: {e}")
     
     # Auditor
     try:
         auditor = get_auditor()
         status = auditor.health_check()
-        results["Auditor (Llama 3.2)"] = (
+        results["Auditor (HuggingFace)"] = (
             status,
             f"Model: {config.vlm_auditor_model}" if status else "Connection failed"
         )
     except Exception as e:
-        results["Auditor (Llama 3.2)"] = (False, f"Error: {e}")
+        results["Auditor (HuggingFace)"] = (False, f"Error: {e}")
     
     # Explainer
     try:
         explainer = get_explainer()
         status = explainer.health_check()
-        results["Explainer (Llama 3.1)"] = (
+        results["Explainer (Groq)"] = (
             status,
             f"Model: {config.explainer_model}" if status else "Connection failed"
         )
     except Exception as e:
-        results["Explainer (Llama 3.1)"] = (False, f"Error: {e}")
+        results["Explainer (Groq)"] = (False, f"Error: {e}")
     
     return results
 
 
 __all__ = [
+    "VLMInspectorAgent",
+    "VLMAuditorAgent",
     "InspectorAgent",
     "AuditorAgent",
     "ExplainerAgent",
