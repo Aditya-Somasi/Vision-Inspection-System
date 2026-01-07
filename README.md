@@ -440,11 +440,4 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 ## 📞 **Support**
 
-- 📧 Email: support@vision-inspection.ai
-- 💬 Discord: [Join our community](https://discord.gg/xxxxx)
-- 🐛 Issues: [GitHub Issues](https://github.com/yourusername/vision-inspection-system/issues)
-- 📚 Docs: [Full Documentation](https://docs.vision-inspection.ai)
-
----
-
-**Built with ❤️ by the Vision Inspection Team**
+- 📧 Email: adityasomasi@gmail.com
