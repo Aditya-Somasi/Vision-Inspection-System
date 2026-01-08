@@ -149,6 +149,10 @@ def render_confidence_metrics(inspector_confidence: str, auditor_confidence: str
         agreement_level = "high" if agreement_score >= 0.8 else "medium" if agreement_score >= 0.5 else "low"
         render_confidence_bar("Model Agreement", agreement_level, agreement_score)
         
+        # Ensure processing_time is not None
+        if processing_time is None:
+            processing_time = 0
+        
         st.markdown(f"""
         <div style="margin-bottom: 0.75rem;">
             <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">

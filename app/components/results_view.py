@@ -56,7 +56,11 @@ def render_image_verdict_card(image_id: str, image_info: Dict[str, Any], results
         inspector_result = results.get("inspector_result", {})
         auditor_result = results.get("auditor_result", {})
         agreement_score = consensus.get("agreement_score", 0.5)
-        processing_time = results.get("processing_time", 0)
+        
+        # Ensure processing_time is not None - handle both None and missing key
+        processing_time = results.get("processing_time")
+        if processing_time is None:
+            processing_time = 0
         
         render_confidence_metrics(
             inspector_confidence=inspector_result.get("overall_confidence", "medium"),
@@ -77,6 +81,164 @@ def render_image_verdict_card(image_id: str, image_info: Dict[str, Any], results
         
         # Decision support
         render_decision_support(results)
+        
+        # Analysis Summary
+        st.divider()
+        st.subheader("📝 Analysis Summary")
+        explanation = results.get("explanation")
+        if explanation:
+            # Parse explanation into sections for better display
+            from src.reporting.pdf_generator import parse_explanation_sections
+            sections = parse_explanation_sections(explanation)
+            
+            # Display sections in a structured way
+            if sections:
+                # Show SUMMARY first if available
+                if "SUMMARY" in sections and sections["SUMMARY"].strip():
+                    st.markdown("#### 📋 Summary")
+                    st.markdown(sections["SUMMARY"])
+                    st.divider()
+                
+                # Show other key sections
+                key_sections = ["KEY TAKEAWAYS", "RECOMMENDATIONS", "FINAL RECOMMENDATION", 
+                               "REASONING CHAINS", "INSPECTOR ANALYSIS", "AUDITOR VERIFICATION", 
+                               "COUNTERFACTUAL"]
+                
+                for section_name in key_sections:
+                    if section_name in sections and sections[section_name].strip():
+                        display_name = section_name.replace("_", " ").title()
+                        st.markdown(f"#### {display_name}")
+                        st.markdown(sections[section_name])
+                        st.divider()
+                
+                # Show any remaining sections
+                shown_sections = set(["SUMMARY"] + key_sections)
+                remaining = set(sections.keys()) - shown_sections
+                for section_name in remaining:
+                    if sections[section_name].strip():
+                        display_name = section_name.replace("_", " ").title()
+                        st.markdown(f"#### {display_name}")
+                        st.markdown(sections[section_name])
+                        st.divider()
+            else:
+                # Fallback: display raw explanation
+                st.markdown(explanation)
+        else:
+            st.warning("⚠️ Analysis summary pending system completion.")
+        
+        # 3-Panel Image Comparison
+        st.divider()
+        st.subheader("🖼️ Visual Evidence (3-Panel View)")
+        
+        image_path = results.get("image_path") or image_info.get("filepath")
+        if not image_path:
+            image_path = results.get("inspector_result", {}).get("image_path")
+        
+        if image_path and Path(image_path).exists():
+            try:
+                from utils.image_utils import create_heatmap_overlay, draw_bounding_boxes
+                from utils.config import REPORT_DIR
+                
+                image_path = Path(image_path)
+                
+                # Create heatmap overlay
+                heatmap_path = REPORT_DIR / f"heatmap_{image_path.stem}.jpg"
+                if not heatmap_path.exists():
+                    create_heatmap_overlay(image_path, defects, heatmap_path)
+                
+                # Create annotated image with numbered markers
+                annotated_path = REPORT_DIR / f"annotated_{image_path.stem}.jpg"
+                if defects and not annotated_path.exists():
+                    boxes = []
+                    for i, defect in enumerate(defects, 1):
+                        bbox = defect.get("bbox", {})
+                        boxes.append({
+                            "x": bbox.get("x", 50 + i*30),
+                            "y": bbox.get("y", 50 + i*30),
+                            "width": bbox.get("width", 50),
+                            "height": bbox.get("height", 50),
+                            "label": f"#{i}",
+                            "severity": defect.get("safety_impact", "MODERATE")
+                        })
+                    draw_bounding_boxes(image_path, boxes, annotated_path)
+                
+                # 3-Panel Display
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown("**1. Original Image**")
+                    st.image(str(image_path), width='stretch')
+                
+                with col2:
+                    st.markdown("**2. Defect Heatmap**")
+                    if heatmap_path.exists():
+                        st.image(str(heatmap_path), width='stretch')
+                    else:
+                        st.image(str(image_path), width='stretch')
+                
+                with col3:
+                    st.markdown("**3. Numbered Markers**")
+                    if annotated_path.exists():
+                        st.image(str(annotated_path), width='stretch')
+                    else:
+                        st.image(str(image_path), width='stretch')
+                
+                # Legend for markers
+                if defects:
+                    legend_text = "**Legend:** "
+                    for i, defect in enumerate(defects, 1):
+                        severity = defect.get("safety_impact", "UNKNOWN")
+                        defect_type = defect.get("type", "unknown")
+                        severity_emoji = {"CRITICAL": "🔴", "MODERATE": "🟡", "COSMETIC": "🔵"}.get(severity, "⚪")
+                        legend_text += f"**#{i}** = {defect_type.title()} ({severity_emoji}) &nbsp;&nbsp; "
+                    st.markdown(legend_text, unsafe_allow_html=True)
+                    
+            except Exception as e:
+                st.warning(f"Could not generate comparison images: {e}")
+                if image_path:
+                    st.image(str(image_path), caption="📷 Original Image", width='stretch')
+        else:
+            st.warning(f"Original image not available for comparison ({image_path or 'unknown path'})")
+        
+        # PDF Report Section
+        report_path = results.get("report_path")
+        if report_path and Path(report_path).exists():
+            st.divider()
+            st.subheader("📄 Inspection Report")
+            
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                with open(report_path, "rb") as f:
+                    st.download_button(
+                        label="📥 Download PDF Report",
+                        data=f,
+                        file_name=Path(report_path).name,
+                        mime="application/pdf",
+                        width='stretch',
+                        type="primary"
+                    )
+            
+            with col2:
+                # Button to open PDF in new tab - use data URI (works reliably in Chrome)
+                import base64
+                with open(report_path, "rb") as f:
+                    pdf_bytes = f.read()
+                    pdf_base64 = base64.b64encode(pdf_bytes).decode()
+                
+                # Use data URI which works reliably in Chrome
+                pdf_data_uri = f"data:application/pdf;base64,{pdf_base64}"
+                
+                st.markdown(
+                    f'''
+                    <a href="{pdf_data_uri}" target="_blank" style="text-decoration: none; display: block;">
+                        <button style="background-color: #0ea5e9; color: white; padding: 0.5rem 1rem; 
+                        border: none; border-radius: 0.25rem; cursor: pointer; width: 100%;">
+                        🔗 Open PDF in New Tab</button>
+                    </a>
+                    ''',
+                    unsafe_allow_html=True
+                )
 
 
 def render_session_summary():
@@ -290,12 +452,26 @@ def render_results_review_tab():
         st.divider()
         st.subheader("📄 Session Report")
         
-        with open(session_report_path, "rb") as f:
-            st.download_button(
-                label="📥 Download Combined PDF Report",
-                data=f,
-                file_name=Path(session_report_path).name,
-                mime="application/pdf",
-                use_container_width=True,
-                type="primary"
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            with open(session_report_path, "rb") as f:
+                st.download_button(
+                    label="📥 Download Combined PDF Report",
+                    data=f,
+                    file_name=Path(session_report_path).name,
+                    mime="application/pdf",
+                    width='stretch',
+                    type="primary"
+                )
+        
+        with col2:
+            # Button to open PDF in new tab
+            report_url = f"file:///{Path(session_report_path).absolute()}"
+            st.markdown(
+                f'<a href="{report_url}" target="_blank">'
+                '<button style="background-color: #0ea5e9; color: white; padding: 0.5rem 1rem; '
+                'border: none; border-radius: 0.25rem; cursor: pointer; width: 100%;">'
+                '🔗 Open PDF in New Tab</button></a>',
+                unsafe_allow_html=True
             )

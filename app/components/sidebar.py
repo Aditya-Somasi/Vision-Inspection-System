@@ -12,7 +12,7 @@ from utils.config import config
 
 def render_system_status():
     """Render system status indicators in sidebar."""
-    st.markdown("#### ┌─ SYSTEM STATUS ─────────────┐")
+    st.markdown("### 🔧 System Status")
     
     # Inspector status
     col1, col2 = st.columns([1, 3])
@@ -47,8 +47,6 @@ def render_system_status():
         st.markdown("**LangSmith**")
         langsmith_text = "Active" if config.langsmith_enabled else "Inactive"
         st.caption(langsmith_text)
-    
-    st.markdown("#### └──────────────────────────────┘")
 
 
 def render_active_session():
@@ -59,7 +57,7 @@ def render_active_session():
     session_start_time = get_state("session_start_time")
     
     if session_id or uploaded_images:
-        st.markdown("#### ┌─ ACTIVE SESSION ─────────────┐")
+        st.markdown("### 📋 Active Session")
         
         if session_id:
             st.markdown(f"**Session ID:** `{str(session_id)[:8]}`")
@@ -81,13 +79,11 @@ def render_active_session():
                 st.markdown(f"**Elapsed:** {elapsed_str}")
         else:
             st.markdown("**Status:** No active session")
-        
-        st.markdown("#### └──────────────────────────────┘")
 
 
 def render_quick_actions():
     """Render quick action buttons."""
-    st.markdown("#### ┌─ QUICK ACTIONS ─────────────┐")
+    st.markdown("### ⚡ Quick Actions")
     
     results = get_state("inspection_results")
     session_results = get_state("session_results")
@@ -112,8 +108,6 @@ def render_quick_actions():
         set_state("image_results", {})
         set_state("inspection_results", None)
         st.rerun()
-    
-    st.markdown("#### └──────────────────────────────┘")
 
 
 def render_sidebar():
@@ -121,33 +115,32 @@ def render_sidebar():
     st.title("🔍 Vision Inspection")
     st.caption(f"v1.0.0 | {config.environment.upper()}")
     
-    st.markdown("---")
+    st.divider()
     
     # Navigation
-    st.markdown("#### ┌─ NAVIGATION ─────────────────┐")
+    st.markdown("### 🧭 Navigation")
     page = st.radio(
         "Navigation",
         ["🏠 Inspection Session", "📊 Analytics", "📋 Inspection History", "⚙️ Settings"],
         label_visibility="collapsed"
     )
-    st.markdown("#### └──────────────────────────────┘")
     
-    st.markdown("---")
+    st.divider()
     
     # System Status
     render_system_status()
     
-    st.markdown("---")
+    st.divider()
     
     # Active Session
     render_active_session()
     
-    st.markdown("---")
+    st.divider()
     
     # Quick Actions
     render_quick_actions()
     
-    st.markdown("---")
+    st.divider()
     
     # Session ID footer
     session_id = get_state("current_session_id") or get_state("session_id") or get_state("chat_session_id") or "unknown"

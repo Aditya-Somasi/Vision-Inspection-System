@@ -119,16 +119,18 @@ def create_inspection_workflow() -> StateGraph:
     workflow.add_edge("safety", "clean_verification")
     
     # Conditional edge for human review (after clean verification)
+    # ALWAYS generate explanation and PDF, even if human review is needed
+    # Human review is now non-blocking - it just flags for review
     workflow.add_conditional_edges(
         "clean_verification",
         should_run_human_review,
         {
-            "human_review": "human_review",
+            "human_review": "human_review",  # Flag for review (non-blocking)
             "generate_explanation": "explanation"
         }
     )
     
-    # Continue from human review
+    # Continue from human review to explanation (non-blocking)
     workflow.add_edge("human_review", "explanation")
     
     # Generate explanation and save
@@ -363,6 +365,8 @@ def run_multi_image_inspection(
                 "consensus": result.get("consensus"),
                 "safety_verdict": result.get("safety_verdict"),
                 "clean_verification": result.get("clean_verification"),
+                "explanation": result.get("explanation"),  # Add explanation
+                "decision_support": result.get("decision_support", {}),  # Add decision_support for chat
                 "report_path": result.get("report_path"),
                 "processing_time": result.get("processing_time", 0),
                 "error": result.get("error"),

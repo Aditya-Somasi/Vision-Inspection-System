@@ -161,9 +161,44 @@ def display_inspection_results(results: Dict[str, Any]):
     st.subheader("📝 Analysis Summary")
     explanation = results.get("explanation")
     if explanation:
-        st.info(explanation)
+        # Parse explanation into sections for better display
+        from src.reporting.pdf_generator import parse_explanation_sections
+        sections = parse_explanation_sections(explanation)
+        
+        # Display sections in a structured way
+        if sections:
+            # Show SUMMARY first if available
+            if "SUMMARY" in sections and sections["SUMMARY"].strip():
+                st.markdown("#### 📋 Summary")
+                st.markdown(sections["SUMMARY"])
+                st.divider()
+            
+            # Show other key sections
+            key_sections = ["KEY TAKEAWAYS", "RECOMMENDATIONS", "FINAL RECOMMENDATION", 
+                           "REASONING CHAINS", "INSPECTOR ANALYSIS", "AUDITOR VERIFICATION", 
+                           "COUNTERFACTUAL"]
+            
+            for section_name in key_sections:
+                if section_name in sections and sections[section_name].strip():
+                    display_name = section_name.replace("_", " ").title()
+                    st.markdown(f"#### {display_name}")
+                    st.markdown(sections[section_name])
+                    st.divider()
+            
+            # Show any remaining sections
+            shown_sections = set(["SUMMARY"] + key_sections)
+            remaining = set(sections.keys()) - shown_sections
+            for section_name in remaining:
+                if sections[section_name].strip():
+                    display_name = section_name.replace("_", " ").title()
+                    st.markdown(f"#### {display_name}")
+                    st.markdown(sections[section_name])
+                    st.divider()
+        else:
+            # Fallback: display raw explanation
+            st.markdown(explanation)
     else:
-        st.info("⚠️ Analysis summary pending system completion.")
+        st.warning("⚠️ Analysis summary pending system completion.")
     
     # Visual Evidence Section - 3-Panel Layout
     st.subheader("🖼️ Visual Evidence (3-Panel View)")
@@ -190,7 +225,11 @@ def display_inspection_results(results: Dict[str, Any]):
             if defects and not annotated_path.exists():
                 boxes = []
                 for i, defect in enumerate(defects, 1):
-                    bbox = defect.get("bbox", {})
+                    bbox = defect.get("bbox")
+                    # Handle case where bbox is None or not a dict
+                    if bbox is None or not isinstance(bbox, dict):
+                        # Skip defects without valid bbox
+                        continue
                     boxes.append({
                         "x": bbox.get("x", 50 + i*30),
                         "y": bbox.get("y", 50 + i*30),
@@ -199,28 +238,35 @@ def display_inspection_results(results: Dict[str, Any]):
                         "label": f"#{i}",
                         "severity": defect.get("safety_impact", "MODERATE")
                     })
-                draw_bounding_boxes(image_path, boxes, annotated_path)
+                
+                # Only draw boxes if we have valid ones
+                if boxes:
+                    draw_bounding_boxes(image_path, boxes, annotated_path)
+                else:
+                    # No valid boxes - just copy original
+                    import shutil
+                    shutil.copy(image_path, annotated_path)
             
             # 3-Panel Display
             col1, col2, col3 = st.columns(3)
             
             with col1:
                 st.markdown("**1. Original Image**")
-                st.image(str(image_path), width="stretch")
+                st.image(str(image_path), width='stretch')
             
             with col2:
                 st.markdown("**2. Defect Heatmap**")
                 if heatmap_path.exists():
-                    st.image(str(heatmap_path), width="stretch")
+                    st.image(str(heatmap_path), width='stretch')
                 else:
-                    st.image(str(image_path), width="stretch")
+                    st.image(str(image_path), width='stretch')
             
             with col3:
                 st.markdown("**3. Numbered Markers**")
                 if annotated_path.exists():
-                    st.image(str(annotated_path), width="stretch")
+                    st.image(str(annotated_path), width='stretch')
                 else:
-                    st.image(str(image_path), width="stretch")
+                    st.image(str(image_path), width='stretch')
             
             # Legend for markers
             if defects:
@@ -347,7 +393,7 @@ def display_inspection_results(results: Dict[str, Any]):
         
         report_path = Path(results["report_path"])
         
-        # Action buttons (removed duplicate column definition)
+        # Action buttons
         col1, col2 = st.columns([1, 1])
         
         with col1:
@@ -357,13 +403,37 @@ def display_inspection_results(results: Dict[str, Any]):
                     data=f,
                     file_name=report_path.name,
                     mime="application/pdf",
-                    use_container_width=True,
+                    width='stretch',
                     type="primary"
                 )
         
         with col2:
-            st.caption(f"📁 {report_path.name}")
-            st.caption(f"📍 {report_path.absolute()}")
+            # Button to open PDF in new tab - use Streamlit's file serving
+            # This is the most reliable method for Chrome
+            import base64
+            import os
+            
+            # Read PDF and create data URI (works in all browsers including Chrome)
+            with open(report_path, "rb") as f:
+                pdf_bytes = f.read()
+                pdf_base64 = base64.b64encode(pdf_bytes).decode()
+            
+            # Use data URI which works reliably in Chrome
+            pdf_data_uri = f"data:application/pdf;base64,{pdf_base64}"
+            
+            st.markdown(
+                f'''
+                <a href="{pdf_data_uri}" target="_blank" style="text-decoration: none; display: block;">
+                    <button style="background-color: #0ea5e9; color: white; padding: 0.5rem 1rem; 
+                    border: none; border-radius: 0.25rem; cursor: pointer; width: 100%;">
+                    🔗 Open PDF in New Tab</button>
+                </a>
+                ''',
+                unsafe_allow_html=True
+            )
+            
+        st.caption(f"📁 {report_path.name}")
+        st.caption(f"📍 {report_path.absolute()}")
             
         # Embedded PDF Viewer
         st.divider()
@@ -428,7 +498,7 @@ def analytics_dashboard():
                     color_discrete_sequence=px.colors.qualitative.Set3
                 )
                 fig.update_layout(showlegend=True, height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 st.info("📊 No defect data available yet.")
         
@@ -450,7 +520,7 @@ def analytics_dashboard():
                     color_discrete_map=colors
                 )
                 fig.update_layout(showlegend=False, height=400)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
             else:
                 st.info("📊 No verdict data available yet.")
         
@@ -471,7 +541,7 @@ def analytics_dashboard():
             
             st.dataframe(
                 df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Verdict": st.column_config.TextColumn(
@@ -559,7 +629,7 @@ def render_upload_configure_tab():
         st.divider()
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            if st.button("📥 Process Uploaded Files", type="primary", use_container_width=True):
+            if st.button("📥 Process Uploaded Files", type="primary", width='stretch'):
                 process_uploaded_files(uploaded_files, metadata)
                 st.success(f"✅ Processed {len(uploaded_files)} file(s)")
                 st.rerun()
@@ -574,7 +644,7 @@ def render_upload_configure_tab():
         st.divider()
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            start_inspection = st.button("🚀 Start Inspection", type="primary", use_container_width=True)
+            start_inspection = st.button("🚀 Start Inspection", type="primary", width='stretch')
             
             if start_inspection:
                 # Get session metadata
@@ -661,29 +731,56 @@ def render_chat_analysis_tab():
     session_results = get_state("session_results", {})
     
     # Combine results for chat context
-    # For now, use the most recent result or create aggregate context
+    # Try to get the most recent result
     chat_results = None
     
+    # Priority 1: Use most recent image result
     if image_results:
-        # Use the first available result as context
-        first_image_id = list(image_results.keys())[0]
-        chat_results = image_results.get(first_image_id)
-    elif session_results:
+        # Get the most recent result (last in dict or first available)
+        image_ids = list(image_results.keys())
+        if image_ids:
+            # Try to get the last one (most recent)
+            latest_image_id = image_ids[-1]
+            chat_results = image_results.get(latest_image_id)
+            # If that doesn't work, try the first one
+            if not chat_results and len(image_ids) > 0:
+                chat_results = image_results.get(image_ids[0])
+            
+            # Ensure decision_support is included (might be missing from image_results)
+            if chat_results and "decision_support" not in chat_results:
+                # Try to get from session_results or set empty dict
+                chat_results["decision_support"] = session_results.get("decision_support", {})
+    
+    # Priority 2: Use session results
+    if not chat_results and session_results:
         # Create a synthetic result from session results
         chat_results = {
             "safety_verdict": {"verdict": session_results.get("aggregate_verdict", "UNKNOWN")},
-            "consensus": {"combined_defects": []},
+            "consensus": {"combined_defects": session_results.get("combined_defects", [])},
+            "explanation": session_results.get("explanation", ""),
+            "decision_support": session_results.get("decision_support", {}),
             "session_summary": session_results
         }
     
-    # Fallback to legacy inspection_results for backward compatibility
+    # Priority 3: Fallback to legacy inspection_results
     if not chat_results:
         chat_results = get_state("inspection_results")
     
-    if chat_results and config.enable_chat_memory:
+    # Always show chat widget - it will handle empty results gracefully
+    # Remove the enable_chat_memory check to make chat always available
+    if chat_results:
         chat_widget(chat_results)
     else:
-        st.info("💬 Start an inspection to enable chat. Results will appear here for Q&A about findings.")
+        # Show chat widget even without results - it can still answer general questions
+        # Create a minimal context
+        empty_results = {
+            "safety_verdict": {"verdict": "UNKNOWN"},
+            "consensus": {"combined_defects": []},
+            "explanation": "No inspection results available yet.",
+            "decision_support": {}
+        }
+        st.info("💡 No inspection results yet. You can still ask general questions about the inspection system.")
+        chat_widget(empty_results)
 
 
 def inspection_history_page():
@@ -710,7 +807,7 @@ def inspection_history_page():
             
             st.dataframe(
                 df,
-                use_container_width=True,
+                width='stretch',
                 hide_index=True,
                 column_config={
                     "Verdict": st.column_config.TextColumn("Verdict", help="Safety verdict"),

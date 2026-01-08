@@ -395,65 +395,33 @@ def evaluate_safety_node(state: InspectionState) -> InspectionState:
 
 def human_review_node(state: InspectionState) -> InspectionState:
     """
-    Human review decision point.
-    This node uses interrupt() to pause the workflow for human input.
-    
-    The workflow will pause here and wait for the user to provide:
-    - decision: "APPROVE", "REJECT", or "MODIFY"
-    - notes: Optional additional notes
+    Human review node - marks for review but doesn't block workflow.
+    Explanation and PDF will still be generated.
+    This is a non-blocking review flag for UI display.
     """
-    from langgraph.types import interrupt
+    logger.info("Human review flagged - marking for review (non-blocking)")
+    state["current_step"] = "flagged_for_review"
     
-    logger.warning("Human review required - workflow pausing for input")
-    state["current_step"] = "awaiting_human_review"
-    
-    # Prepare review context for the user
+    # Mark that human review is recommended but don't block workflow
+    # The UI can show this flag and allow users to review later
     safety_verdict = state.get("safety_verdict", {})
     consensus = state.get("consensus", {})
     defects = consensus.get("combined_defects", [])
     
-    review_context = {
-        "type": "human_review_required",
-        "reason": safety_verdict.get("triggered_gates", ["Safety gate triggered"]),
+    # Store review context for UI display
+    state["human_review_context"] = {
+        "type": "human_review_recommended",
+        "reason": safety_verdict.get("reason", "Clean verification failed or high criticality"),
         "verdict": safety_verdict.get("verdict", "UNKNOWN"),
-        "defects": [
-            {
-                "type": d.get("type"),
-                "severity": d.get("safety_impact"),
-                "location": d.get("location"),
-                "reasoning": d.get("reasoning")
-            }
-            for d in defects
-        ],
+        "defect_count": len(defects),
         "models_agree": consensus.get("models_agree", False),
         "agreement_score": consensus.get("agreement_score", 0),
-        "options": ["APPROVE", "REJECT", "MODIFY"],
-        "message": "Please review the inspection findings and provide your decision."
+        "message": "Human review is recommended. Inspection will complete and results will be available for review."
     }
     
-    # INTERRUPT - workflow pauses here until user provides input
-    human_input = interrupt(review_context)
-    
-    # Process human input when workflow resumes
-    if isinstance(human_input, dict):
-        state["human_decision"] = human_input.get("decision", "APPROVE")
-        state["human_notes"] = human_input.get("notes", "")
-        
-        # Update verdict based on human decision
-        if human_input.get("decision") == "REJECT":
-            state["safety_verdict"]["verdict"] = "UNSAFE"
-            state["safety_verdict"]["human_override"] = True
-        elif human_input.get("decision") == "APPROVE":
-            state["safety_verdict"]["verdict"] = "SAFE"
-            state["safety_verdict"]["human_override"] = True
-        # MODIFY keeps original verdict but adds notes
-    else:
-        # Simple string input
-        state["human_decision"] = str(human_input)
-        state["human_notes"] = ""
-    
-    logger.info(f"Human review complete: {state['human_decision']}")
-    state["current_step"] = "human_review_complete"
+    # Don't change verdict - keep original verdict
+    # Just mark that review is recommended
+    logger.info("Human review flagged (non-blocking) - workflow will continue to generate explanation and PDF")
     
     return state
 
@@ -495,15 +463,23 @@ def clean_verification_node(state: InspectionState) -> InspectionState:
             no_errors = not (inspector_result.analysis_failed or auditor_result.analysis_failed)
             
             # Check image quality if available
+            # For clean images (0 defects), image quality is less critical if models agree
             image_quality = state.get("image_quality", {})
             quality_passed = image_quality.get("quality_passed", True)  # Default to True if not checked
+            quality_score = image_quality.get("quality_score", 1.0)  # Default to 1.0 if not available
+            
+            # If both models agree with high confidence and no defects, 
+            # image quality threshold is less critical (only warn, don't fail)
+            # Only fail quality check if quality is very poor AND models disagree
+            very_poor_quality = quality_score < 0.3  # Very poor threshold
             
             # All criteria must pass for clean verification
+            # Quality check is less strict if models strongly agree (agreement > 0.9)
             clean_verified = (
                 both_high_conf and
                 high_agreement and
                 no_errors and
-                quality_passed
+                (quality_passed or (agreement_score > 0.9 and not very_poor_quality))
             )
             
             if clean_verified:
@@ -537,15 +513,29 @@ def clean_verification_node(state: InspectionState) -> InspectionState:
                     }
                 }
                 
-                # If clean verification fails, update safety verdict to require review
+                # If clean verification fails, flag for human review but keep SAFE verdict
+                # Only change verdict if quality is very poor AND models disagree
                 safety_verdict = state.get("safety_verdict", {})
                 if safety_verdict.get("verdict") == "SAFE":
-                    logger.warning("Clean verification failed - updating SAFE verdict to REQUIRE_HUMAN_REVIEW")
-                    safety_verdict["verdict"] = "REQUIRES_HUMAN_REVIEW"
-                    safety_verdict["requires_human"] = True
-                    safety_verdict["reason"] = f"Clean verification failed: {', '.join(reasons)}. Conservative review required."
-                    state["safety_verdict"] = safety_verdict
-                    state["requires_human_review"] = True
+                    # Only change to REQUIRES_HUMAN_REVIEW if quality is very poor (< 0.3) 
+                    # AND models don't strongly agree (agreement < 0.9)
+                    very_poor_quality = quality_score < 0.3
+                    low_agreement = agreement_score < 0.9
+                    
+                    if very_poor_quality and low_agreement:
+                        logger.warning("Clean verification failed with very poor quality and low agreement - updating SAFE verdict to REQUIRE_HUMAN_REVIEW")
+                        safety_verdict["verdict"] = "REQUIRES_HUMAN_REVIEW"
+                        safety_verdict["requires_human"] = True
+                        safety_verdict["reason"] = f"Clean verification failed: {', '.join(reasons)}. Conservative review required."
+                        state["safety_verdict"] = safety_verdict
+                        state["requires_human_review"] = True
+                    else:
+                        # Keep SAFE verdict but flag for review
+                        logger.info(f"Clean verification failed but keeping SAFE verdict (quality: {quality_score:.2f}, agreement: {agreement_score:.2f}). Flagging for optional review.")
+                        state["requires_human_review"] = True
+                        # Add note to verdict without changing it
+                        safety_verdict["review_note"] = f"Optional review recommended: {', '.join(reasons)}"
+                        state["safety_verdict"] = safety_verdict
         else:
             # Defects found - clean verification not applicable
             state["clean_verification"] = {
@@ -758,9 +748,23 @@ def save_to_database(state: InspectionState) -> InspectionState:
 
 
 def finalize_inspection(state: InspectionState) -> InspectionState:
-    """Finalize inspection and log results."""
+    """Finalize inspection, generate PDF report, and log results."""
     state["current_step"] = "completed"
     state["processing_time"] = time.time() - state["start_time"]
+    
+    # Generate PDF report if explanation exists
+    if state.get("explanation") and not state.get("report_path"):
+        try:
+            from src.reporting import generate_report
+            from pathlib import Path
+            
+            logger.info("Generating PDF report...")
+            report_path = generate_report(state)
+            state["report_path"] = str(report_path)
+            logger.info(f"PDF report generated: {report_path}")
+        except Exception as e:
+            logger.error(f"PDF report generation failed: {e}", exc_info=True)
+            state["error"] = f"PDF generation failed: {str(e)}"
     
     # Ensure errors are visible in final state
     errors = state.get("failure_history", [])
@@ -778,6 +782,8 @@ def finalize_inspection(state: InspectionState) -> InspectionState:
     logger.info(f"Request ID: {state['request_id']}")
     logger.info(f"Verdict: {state['safety_verdict']['verdict']}")
     logger.info(f"Processing time: {state['processing_time']:.2f}s")
+    if state.get("report_path"):
+        logger.info(f"PDF Report: {state['report_path']}")
     if errors:
         logger.warning(f"Errors encountered: {len(errors)} error(s)")
         for err in errors:

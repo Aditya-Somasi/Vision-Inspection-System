@@ -55,7 +55,7 @@ def render_image_preview_card(image_id: str, filename: str, filepath: Path, stat
                 img = Image.open(filepath)
                 # Resize for thumbnail (max 150px width)
                 img.thumbnail((150, 150))
-                st.image(img, use_container_width=False)
+                st.image(img, width='content')
         except Exception:
             st.info("📷 Image")
     

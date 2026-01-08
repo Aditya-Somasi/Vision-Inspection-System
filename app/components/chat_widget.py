@@ -69,67 +69,125 @@ def stream_response(response_text: str, delay: float = 0.02) -> Generator[str, N
         time.sleep(delay)
 
 
-def get_chat_chain(inspection_results: Dict[str, Any]):
+def get_chat_chain(inspection_results: Dict[str, Any], session_id: str = None):
     """
     Create a LangChain conversation chain with inspection context.
-    Uses history-aware retrieval for follow-up questions.
+    Uses RunnableWithMessageHistory for proper history management (LangChain best practice).
     Falls back to native Groq SDK if LangChain fails.
+    
+    Args:
+        inspection_results: Inspection results to provide context
+        session_id: Session ID for history management
     """
     try:
         from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-        from langchain_core.messages import HumanMessage, AIMessage
+        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
         from langchain_groq import ChatGroq
+        from langchain_core.runnables.history import RunnableWithMessageHistory
+        from src.chat_memory import get_memory_manager
         
-        # Build context from inspection results
+        # Build comprehensive context from inspection results
         verdict = inspection_results.get("safety_verdict", {}).get("verdict", "UNKNOWN")
         consensus = inspection_results.get("consensus", {})
         defects = consensus.get("combined_defects", [])
         explanation = inspection_results.get("explanation", "")
         decision_support = inspection_results.get("decision_support", {})
+        inspector_result = inspection_results.get("inspector_result", {})
+        auditor_result = inspection_results.get("auditor_result", {})
+        
+        # Build detailed context
+        defects_summary = []
+        for i, defect in enumerate(defects[:10], 1):  # Limit to 10 for context
+            defects_summary.append(
+                f"  {i}. Type: {defect.get('type', 'unknown')}, "
+                f"Severity: {defect.get('safety_impact', 'UNKNOWN')}, "
+                f"Location: {defect.get('location', 'unknown')}, "
+                f"Confidence: {defect.get('confidence', 'unknown')}"
+            )
         
         context = f"""
-        INSPECTION RESULTS CONTEXT:
-        - Verdict: {verdict}
-        - Total Defects: {len(defects)}
-        - Defects: {[{'type': d.get('type'), 'severity': d.get('safety_impact'), 'location': d.get('location')} for d in defects[:5]]}
-        - Decision Support: {decision_support}
-        - Summary: {explanation[:500] if explanation else 'Not available'}
-        """
+INSPECTION RESULTS CONTEXT:
+- Safety Verdict: {verdict}
+- Total Defects Found: {len(defects)}
+- Critical Defects: {sum(1 for d in defects if d.get('safety_impact') == 'CRITICAL')}
+- Moderate Defects: {sum(1 for d in defects if d.get('safety_impact') == 'MODERATE')}
+- Cosmetic Defects: {sum(1 for d in defects if d.get('safety_impact') == 'COSMETIC')}
+- Inspector Confidence: {inspector_result.get('overall_confidence', 'unknown')}
+- Auditor Confidence: {auditor_result.get('overall_confidence', 'unknown')}
+- Models Agreement: {consensus.get('models_agree', False)} (Score: {consensus.get('agreement_score', 0):.1%})
+
+DEFECTS DETAILS:
+{chr(10).join(defects_summary) if defects_summary else '  No defects found'}
+
+DECISION SUPPORT:
+- Recommendation: {decision_support.get('recommendation', 'N/A')}
+- Repair Cost: {decision_support.get('repair_cost', 'N/A')}
+- Replace Cost: {decision_support.get('replace_cost', 'N/A')}
+- Repair Time: {decision_support.get('repair_time', 'N/A')}
+- Replace Time: {decision_support.get('replace_time', 'N/A')}
+
+DETAILED ANALYSIS:
+{explanation[:1000] if explanation and len(explanation) > 100 else 'Analysis summary not available'}
+"""
         
-        # Create prompt with history
+        # Use proper LangChain prompt template with MessagesPlaceholder
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are an expert assistant for a Vision Inspection System.
-            You help users understand inspection results, defects, and safety recommendations.
-            
-            {context}
-            
-            GUIDELINES:
-            - Answer questions about the inspection results
-            - Explain defects and their severity
-            - Provide safety recommendations
-            - Be concise but thorough
-            - If asked about something not in the results, say so clearly
-            - NEVER change or override the safety verdict
-            """),
+            ("system", """You are an expert assistant for a Vision Inspection System.
+You help users understand inspection results, defects, safety implications, and recommendations.
+
+{inspection_context}
+
+GUIDELINES:
+- Answer questions about the inspection results accurately and thoroughly
+- Explain defects, their severity, and safety implications clearly
+- Provide actionable safety recommendations based on the verdict
+- Reference specific defects by number when relevant
+- If asked about something not in the results, clearly state that information is not available
+- NEVER change or override the safety verdict - it is determined by the inspection system
+- Use the defect details, decision support, and analysis provided above to give comprehensive answers
+- Be conversational but professional
+- If the user asks follow-up questions, use the chat history to maintain context"""),
             MessagesPlaceholder(variable_name="chat_history"),
             ("human", "{input}")
         ])
         
-        # Create LLM
+        # Create LLM with structured output support
         llm = ChatGroq(
-            model=config.vlm_explainer_model,
+            model=config.explainer_model,
             temperature=0.3,
             api_key=config.groq_api_key,
             streaming=True
         )
         
-        chain = prompt | llm
+        # Create chain
+        chain = prompt.partial(inspection_context=context) | llm
         
+        # Use RunnableWithMessageHistory for proper history management (LangChain best practice)
+        if session_id and config.enable_chat_memory:
+            try:
+                memory_manager = get_memory_manager()
+                history_store = memory_manager.get_history(session_id)
+                
+                # Wrap chain with message history
+                chain_with_history = RunnableWithMessageHistory(
+                    chain,
+                    lambda session_id: history_store,
+                    input_messages_key="input",
+                    history_messages_key="chat_history"
+                )
+                
+                return ("langchain_history", (chain_with_history, session_id))
+            except Exception as e:
+                logger.warning(f"History management failed: {e}. Using basic chain.")
+        
+        # Fallback to basic chain without history management
         return ("langchain", chain)
         
+    except ImportError as e:
+        logger.warning(f"LangChain not available: {e}. Using Groq SDK fallback.")
+        return ("groq_sdk", inspection_results)
     except Exception as e:
         logger.warning(f"LangChain initialization failed: {e}. Using Groq SDK fallback.")
-        # Return indicator to use native Groq SDK
         return ("groq_sdk", inspection_results)
 
 
@@ -141,7 +199,15 @@ def get_groq_response(user_input: str, inspection_results: Dict[str, Any], chat_
     try:
         from groq import Groq
         
-        client = Groq(api_key=config.groq_api_key)
+        if not config.groq_api_key:
+            yield "Error: Groq API key not configured. Please set GROQ_API_KEY in your environment variables."
+            return
+        
+        try:
+            client = Groq(api_key=config.groq_api_key)
+        except Exception as e:
+            yield f"Error initializing Groq client: {str(e)}"
+            return
         
         # Build context from inspection results
         verdict = inspection_results.get("safety_verdict", {}).get("verdict", "UNKNOWN")
@@ -150,7 +216,11 @@ def get_groq_response(user_input: str, inspection_results: Dict[str, Any], chat_
         explanation = inspection_results.get("explanation", "")
         decision_support = inspection_results.get("decision_support", {})
         
-        system_context = f"""You are an expert assistant for a Vision Inspection System.
+        # Check if we have actual inspection results or just placeholder
+        has_results = verdict != "UNKNOWN" or len(defects) > 0 or explanation and explanation != "No inspection results available yet."
+        
+        if has_results:
+            system_context = f"""You are an expert assistant for a Vision Inspection System.
 You help users understand inspection results, defects, and safety recommendations.
 
 INSPECTION RESULTS CONTEXT:
@@ -166,6 +236,16 @@ GUIDELINES:
 - Provide safety recommendations
 - Be concise but thorough
 - NEVER change or override the safety verdict"""
+        else:
+            system_context = """You are an expert assistant for a Vision Inspection System.
+You help users understand how the inspection system works, answer questions about the inspection process,
+and provide general guidance about vision-based quality inspection.
+
+GUIDELINES:
+- Answer questions about the inspection system and its capabilities
+- Explain how vision inspection works
+- Provide general guidance about quality inspection
+- Be helpful and informative"""
 
         # Build messages including history
         messages = [{"role": "system", "content": system_context}]
@@ -180,7 +260,7 @@ GUIDELINES:
         
         # Stream response
         stream = client.chat.completions.create(
-            model=config.vlm_explainer_model,
+            model=config.explainer_model,  # Use explainer_model, not vlm_explainer_model
             messages=messages,
             temperature=0.3,
             stream=True
@@ -211,11 +291,17 @@ def format_chat_history(messages: list) -> list:
 def chat_widget(results: Dict[str, Any]):
     """
     Render the interactive chat widget with streaming responses.
+    Uses LangChain best practices: RunnableWithMessageHistory, proper prompt templates.
     
     Args:
         results: Inspection results to provide context for chat
     """
     st.subheader("💬 Ask Questions About This Inspection")
+    
+    # Initialize chat session ID if needed
+    if "chat_session_id" not in st.session_state:
+        import uuid
+        st.session_state.chat_session_id = str(uuid.uuid4())
     
     # Initialize chat messages if needed
     if "chat_messages" not in st.session_state:
@@ -241,7 +327,7 @@ def chat_widget(results: Dict[str, Any]):
             )
         
         with col2:
-            submit = st.form_submit_button("Send", use_container_width=True)
+            submit = st.form_submit_button("Send", width='stretch')
     
     # Process user input
     if submit and user_input.strip():
@@ -252,24 +338,56 @@ def chat_widget(results: Dict[str, Any]):
         })
         
         # Show typing indicator
-        with st.spinner(""):
-            typing_placeholder = st.empty()
-            with typing_placeholder:
-                render_typing_indicator()
+        typing_placeholder = st.empty()
+        with typing_placeholder:
+            st.markdown("🤖 Assistant is thinking...")
+        
+        try:
+            # Get chat chain with session ID for history management
+            chain_result = get_chat_chain(results, st.session_state.chat_session_id)
             
-            try:
-                # Get chat chain (returns tuple: (backend_type, chain_or_results))
-                chain_result = get_chat_chain(results)
+            if chain_result:
+                backend_type, chain_data = chain_result
+                response_placeholder = st.empty()
+                full_response = ""
                 
-                if chain_result:
-                    backend_type, chain_data = chain_result
-                    response_placeholder = st.empty()
-                    full_response = ""
+                if backend_type == "langchain_history":
+                    # Use LangChain with RunnableWithMessageHistory (best practice)
+                    chain_with_history, session_id = chain_data
+                    config = {"configurable": {"session_id": session_id}}
                     
-                    if backend_type == "langchain":
-                        # Use LangChain streaming
-                        chat_history = format_chat_history(st.session_state.chat_messages[:-1])
-                        
+                    try:
+                        # Stream with history management
+                        for chunk in chain_with_history.stream(
+                            {"input": user_input},
+                            config=config
+                        ):
+                            if hasattr(chunk, 'content'):
+                                full_response += chunk.content
+                                with response_placeholder:
+                                    render_message("assistant", full_response, is_streaming=True)
+                    except Exception as e:
+                        logger.error(f"LangChain history streaming error: {e}")
+                        # Fallback to basic LangChain
+                        chain_result_basic = get_chat_chain(results)
+                        if chain_result_basic and chain_result_basic[0] == "langchain":
+                            for chunk in chain_result_basic[1].stream({"input": user_input, "chat_history": format_chat_history(st.session_state.chat_messages[:-1])}):
+                                if hasattr(chunk, 'content'):
+                                    full_response += chunk.content
+                                    with response_placeholder:
+                                        render_message("assistant", full_response, is_streaming=True)
+                        else:
+                            # Final fallback to Groq SDK
+                            for chunk in get_groq_response(user_input, results, st.session_state.chat_messages[:-1]):
+                                full_response += chunk
+                                with response_placeholder:
+                                    render_message("assistant", full_response, is_streaming=True)
+                
+                elif backend_type == "langchain":
+                    # Use basic LangChain streaming
+                    chat_history = format_chat_history(st.session_state.chat_messages[:-1])
+                    
+                    try:
                         for chunk in chain_data.stream({
                             "input": user_input,
                             "chat_history": chat_history
@@ -278,64 +396,84 @@ def chat_widget(results: Dict[str, Any]):
                                 full_response += chunk.content
                                 with response_placeholder:
                                     render_message("assistant", full_response, is_streaming=True)
-                    
-                    elif backend_type == "groq_sdk":
-                        # Use native Groq SDK fallback
-                        for chunk in get_groq_response(
-                            user_input, 
-                            chain_data,  # This is inspection_results
-                            st.session_state.chat_messages[:-1]
-                        ):
+                    except Exception as e:
+                        logger.error(f"LangChain streaming error: {e}")
+                        # Fallback to Groq SDK
+                        for chunk in get_groq_response(user_input, results, st.session_state.chat_messages[:-1]):
                             full_response += chunk
                             with response_placeholder:
                                 render_message("assistant", full_response, is_streaming=True)
-                    
-                    # Clear typing indicator
-                    typing_placeholder.empty()
-                    
-                    # Add response to history
+                
+                elif backend_type == "groq_sdk":
+                    # Use native Groq SDK fallback
+                    for chunk in get_groq_response(
+                        user_input, 
+                        chain_data,  # This is inspection_results
+                        st.session_state.chat_messages[:-1]
+                    ):
+                        full_response += chunk
+                        with response_placeholder:
+                            render_message("assistant", full_response, is_streaming=True)
+                
+                # Clear typing indicator
+                typing_placeholder.empty()
+                
+                # Add response to history (only if we got a response)
+                if full_response.strip():
                     st.session_state.chat_messages.append({
                         "role": "assistant",
                         "content": full_response
                     })
-                    
                 else:
-                    # Fallback if chain creation failed
-                    typing_placeholder.empty()
-                    fallback_response = "I'm sorry, I couldn't process your question. Please try again."
+                    # If no response, add error message
+                    error_msg = "Sorry, I didn't receive a response. Please try again."
                     st.session_state.chat_messages.append({
                         "role": "assistant",
-                        "content": fallback_response
+                        "content": error_msg
                     })
                     
-            except Exception as e:
-                logger.error(f"Chat error: {e}")
+            else:
+                # Fallback if chain creation failed
                 typing_placeholder.empty()
-                error_response = f"An error occurred: {str(e)}"
+                fallback_response = "I'm sorry, I couldn't process your question. Please check your API keys and try again."
                 st.session_state.chat_messages.append({
                     "role": "assistant",
-                    "content": error_response
+                    "content": fallback_response
                 })
+                
+        except Exception as e:
+            logger.error(f"Chat error: {e}", exc_info=True)
+            typing_placeholder.empty()
+            error_response = f"An error occurred: {str(e)}. Please check your configuration and try again."
+            st.session_state.chat_messages.append({
+                "role": "assistant",
+                "content": error_response
+            })
         
         # Rerun to update display
         st.rerun()
     
-    # Quick action buttons
-    st.markdown("**Quick Questions:**")
-    col1, col2, col3 = st.columns(3)
+    # Clear chat button and quick action buttons
+    col_clear, col1, col2, col3 = st.columns([1, 2, 2, 2])
     
+    with col_clear:
+        if st.button("🗑️ Clear Chat", width='stretch', help="Clear chat history"):
+            clear_chat()
+            st.rerun()
+    
+    st.markdown("**Quick Questions:**")
     with col1:
-        if st.button("🔍 Explain defects", use_container_width=True):
+        if st.button("🔍 Explain defects", width='stretch'):
             st.session_state.quick_question = "Can you explain each defect found and its severity?"
             st.rerun()
     
     with col2:
-        if st.button("💰 Cost breakdown", use_container_width=True):
+        if st.button("💰 Cost breakdown", width='stretch'):
             st.session_state.quick_question = "What's the detailed cost breakdown for repair vs replacement?"
             st.rerun()
     
     with col3:
-        if st.button("⚠️ Safety impact", use_container_width=True):
+        if st.button("⚠️ Safety impact", width='stretch'):
             st.session_state.quick_question = "What are the safety implications of using this item as-is?"
             st.rerun()
     

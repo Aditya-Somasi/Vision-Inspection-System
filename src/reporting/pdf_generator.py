@@ -195,61 +195,71 @@ def parse_explanation_sections(explanation: str) -> Dict[str, str]:
             if content_text:
                 sections[current_section] = content_text
     
-    # Strategy 3: Keyword-based fallback (more robust, works even if formatting varies)
-    if not sections or "SUMMARY" not in sections:
-        logger.debug("Trying keyword-based section extraction as fallback")
+    # Strategy 3: Enhanced keyword-based extraction (ALWAYS RUN - more robust, works even if formatting varies)
+    # This is more aggressive and will extract sections even without explicit markers
+    logger.debug("Performing enhanced keyword-based section extraction")
+    
+    # Enhanced keywords that indicate section starts (more comprehensive)
+    section_keywords = {
+        "EXECUTIVE SUMMARY": ["executive summary", "summary", "overview", "inspection summary"],
+        "KEY TAKEAWAYS": ["key takeaways", "key findings", "highlights", "main points", "takeaways"],
+        "RECOMMENDATIONS": ["recommendations", "recommended actions", "next steps", "action items", "action required", "suggested actions"],
+        "FINAL RECOMMENDATION": ["final recommendation", "recommendation", "verdict", "conclusion", "final verdict"],
+        "REASONING CHAINS": ["reasoning chains", "reasoning", "analysis reasoning", "thought process"],
+        "INSPECTOR ANALYSIS": ["inspector analysis", "inspector:", "inspector findings", "primary analysis"],
+        "AUDITOR VERIFICATION": ["auditor verification", "auditor:", "auditor findings", "verification"],
+        "COUNTERFACTUAL": ["counterfactual", "what if", "alternative scenario", "counterfactual analysis"]
+    }
+    
+    # Always run keyword extraction to find additional sections
+    # This supplements Strategy 1 and 2, doesn't replace them
+    lines = text.split("\n")
+    keyword_sections = {}
+    current_section = None
+    current_content = []
+    
+    for line in lines:
+        line_lower = line.lower().strip()
         
-        # Keywords that indicate section starts
-        section_keywords = {
-            "EXECUTIVE SUMMARY": ["executive summary", "summary", "overview"],
-            "INSPECTION DETAILS": ["inspection details", "details", "findings"],
-            "DEFECT ANALYSIS": ["defect analysis", "defect", "defects"],
-            "FINAL RECOMMENDATION": ["final recommendation", "recommendation", "verdict", "action required"],
-            "REASONING CHAINS": ["reasoning chains", "reasoning"],
-            "COUNTERFACTUAL": ["counterfactual", "what if"]
-        }
-        
-        lines = text.split("\n")
-        current_section = None
-        current_content = []
-        
-        for line in lines:
-            line_lower = line.lower().strip()
-            
-            # Check if line matches any section keyword
-            matched_keyword = None
-            for section_name, keywords in section_keywords.items():
-                for keyword in keywords:
-                    if keyword in line_lower and len(line_lower) < 100:  # Reasonable header length
-                        matched_keyword = section_name
-                        break
-                if matched_keyword:
+        # Check if line matches any section keyword
+        matched_keyword = None
+        for section_name, keywords in section_keywords.items():
+            for keyword in keywords:
+                if keyword in line_lower and len(line_lower) < 100:  # Reasonable header length
+                    matched_keyword = section_name
                     break
-            
             if matched_keyword:
-                # Save previous section
-                if current_section and current_content:
-                    content = "\n".join(current_content).strip()
-                    if content:
-                        sections[current_section] = content.replace("**", "").replace("##", "")
-                
-                current_section = matched_keyword
-                current_content = []
-            elif current_section:
-                # Add to current section
-                if line.strip():
-                    current_content.append(line.strip().replace("**", "").replace("##", ""))
-            elif not current_section:
-                # Before any section identified, treat as SUMMARY
-                if line.strip() and not line_lower.startswith(("---", "##")):
-                    current_section = "SUMMARY"
-                    current_content.append(line.strip().replace("**", "").replace("##", ""))
+                break
         
-        # Save last section
-        if current_section and current_content:
-            content = "\n".join(current_content).strip()
-            if content:
-                sections[current_section] = content.replace("**", "").replace("##", "")
+        if matched_keyword:
+            # Save previous section
+            if current_section and current_content:
+                content = "\n".join(current_content).strip()
+                if content:
+                    keyword_sections[current_section] = content.replace("**", "").replace("##", "")
+            
+            current_section = matched_keyword
+            current_content = []
+        elif current_section:
+            # Add to current section
+            if line.strip():
+                current_content.append(line.strip().replace("**", "").replace("##", ""))
+        elif not current_section:
+            # Before any section identified, treat as SUMMARY
+            if line.strip() and not line_lower.startswith(("---", "##")):
+                current_section = "SUMMARY"
+                current_content.append(line.strip().replace("**", "").replace("##", ""))
+    
+    # Save last section
+    if current_section and current_content:
+        content = "\n".join(current_content).strip()
+        if content:
+            keyword_sections[current_section] = content.replace("**", "").replace("##", "")
+    
+    # Merge keyword sections with existing sections (keyword sections take precedence if they have more content)
+    for section_name, content in keyword_sections.items():
+        if section_name not in sections or len(content) > len(sections.get(section_name, "")):
+            sections[section_name] = content
     
     # Ensure we have at least a SUMMARY - if not, use first meaningful content
     if not sections or "SUMMARY" not in sections:
@@ -752,15 +762,30 @@ class InspectionReport:
             if d.get("safety_impact") == "CRITICAL"
         )
         
+        # Get additional details for comprehensive summary
+        inspector = state.get("inspector_result", {})
+        auditor = state.get("auditor_result", {})
+        object_name = inspector.get("object_identified") or auditor.get("object_identified", "Unknown")
+        agreement_score = consensus.get("agreement_score", 0)
+        inspector_conf = inspector.get("overall_confidence", "unknown").title()
+        auditor_conf = auditor.get("overall_confidence", "unknown").title()
+        moderate_count = sum(1 for d in consensus.get("combined_defects", []) if d.get("safety_impact") == "MODERATE")
+        cosmetic_count = sum(1 for d in consensus.get("combined_defects", []) if d.get("safety_impact") == "COSMETIC")
+        
         summary_data = [
             ["Metric", "Value"],
             ["Image Inspected", Path(state.get("image_path", "")).name],
+            ["Object Identified", object_name],
             ["Criticality Level", context.get("criticality", "unknown").upper()],
             ["Domain", context.get("domain") or "General"],
             ["Total Defects Found", str(defect_count)],
             ["Critical Defects", str(critical_count)],
-            ["Models Agreement", "Yes" if consensus.get("models_agree") else "No"],
-            ["Confidence Level", verdict.get("confidence_level", "unknown").title()],
+            ["Moderate Defects", str(moderate_count)],
+            ["Cosmetic Defects", str(cosmetic_count)],
+            ["Final Verdict", verdict.get("verdict", "UNKNOWN")],
+            ["Models Agreement", f"{'Yes' if consensus.get('models_agree') else 'No'} ({agreement_score:.0%})"],
+            ["Inspector Confidence", inspector_conf],
+            ["Auditor Confidence", auditor_conf],
             ["Human Review", "Required" if verdict.get("requires_human") else "Not Required"]
         ]
         
@@ -794,34 +819,98 @@ class InspectionReport:
         elements.append(Spacer(1, 0.2 * inch))
         
         # Analysis text - Parse into sections with proper formatting
-        elements.append(Paragraph("<b>Analysis Summary:</b>", self.styles["SubHeader"]))
+        elements.append(Paragraph("<b>Detailed Analysis Summary:</b>", self.styles["SubHeader"]))
         
         # Parse explanation into sections
         sections = parse_explanation_sections(explanation)
         logger.info(f"Parsed {len(sections)} sections for PDF: {list(sections.keys())}")
         
-        # Validate that SUMMARY section exists (critical) - generate fallback if missing
+        # Add completeness indicator
+        required_sections = ["SUMMARY", "FINAL RECOMMENDATION"]
+        missing_sections = [s for s in required_sections if s not in sections or not sections.get(s, "").strip()]
+        
+        if missing_sections:
+            completeness_text = f"<b>Analysis Completeness:</b> ⚠ Some sections may be missing or truncated. "
+            completeness_text += f"Missing: {', '.join(missing_sections)}. "
+            completeness_text += "Fallback summary generated from structured data."
+            elements.append(Paragraph(completeness_text, ParagraphStyle(
+                name="CompletenessWarning",
+                parent=self.styles["Normal"],
+                fontSize=9,
+                textColor=BRAND_WARNING,
+                fontName="Helvetica-Oblique"
+            )))
+            elements.append(Spacer(1, 0.1 * inch))
+        else:
+            completeness_text = "<b>Analysis Completeness:</b> ✓ All required sections present."
+            elements.append(Paragraph(completeness_text, ParagraphStyle(
+                name="CompletenessOK",
+                parent=self.styles["Normal"],
+                fontSize=9,
+                textColor=BRAND_SUCCESS,
+                fontName="Helvetica-Oblique"
+            )))
+            elements.append(Spacer(1, 0.1 * inch))
+        
+        # Validate that SUMMARY section exists (critical) - generate comprehensive fallback if missing
         if "SUMMARY" not in sections or not sections.get("SUMMARY", "").strip():
-            logger.warning("SUMMARY section missing or empty - generating fallback")
+            logger.warning("SUMMARY section missing or empty - generating comprehensive fallback")
             inspector = state.get("inspector_result", {})
-            object_name = inspector.get("object_identified", "component")
+            auditor = state.get("auditor_result", {})
+            object_name = inspector.get("object_identified", "component") or auditor.get("object_identified", "component")
             verdict_str = verdict.get("verdict", "UNKNOWN")
+            agreement_score = consensus.get("agreement_score", 0)
+            models_agree = consensus.get("models_agree", False)
             
+            # Build comprehensive summary from all available data
             fallback_summary = (
+                f"EXECUTIVE SUMMARY\n\n"
                 f"Inspection of {object_name} identified {defect_count} defect(s). "
                 f"Final verdict: {verdict_str}. "
-                f"Both Inspector and Auditor models analyzed the image independently. "
+                f"Both Inspector ({config.vlm_inspector_model.split('/')[-1]}) and Auditor ({config.vlm_auditor_model.split('/')[-1]}) models analyzed the image independently.\n\n"
             )
+            
             if defect_count > 0:
                 if critical_count > 0:
-                    fallback_summary += f"{critical_count} critical defect(s) were detected."
+                    fallback_summary += (
+                        f"CRITICAL FINDINGS: {critical_count} critical defect(s) were detected, requiring immediate attention. "
+                    )
+                moderate_count = sum(1 for d in consensus.get("combined_defects", []) if d.get("safety_impact") == "MODERATE")
+                cosmetic_count = sum(1 for d in consensus.get("combined_defects", []) if d.get("safety_impact") == "COSMETIC")
+                
+                if moderate_count > 0:
+                    fallback_summary += f"{moderate_count} moderate defect(s) and "
+                if cosmetic_count > 0:
+                    fallback_summary += f"{cosmetic_count} cosmetic defect(s) were also identified. "
+                
+                # Add agreement information
+                if models_agree:
+                    fallback_summary += f"Both models agreed on the findings (agreement score: {agreement_score:.0%}). "
                 else:
-                    fallback_summary += "No critical defects detected."
+                    fallback_summary += f"Models showed some disagreement (agreement score: {agreement_score:.0%}). "
             else:
-                fallback_summary += "No defects were detected."
+                fallback_summary += "No defects were detected. "
+                if models_agree:
+                    fallback_summary += f"Both models confirmed the item is defect-free (agreement score: {agreement_score:.0%}). "
+            
+            # Add verdict implications
+            if verdict_str == "UNSAFE":
+                fallback_summary += "\n\nFINAL RECOMMENDATION\n\n"
+                fallback_summary += f"Verdict: {verdict_str}\n"
+                fallback_summary += "Action Required: Further inspection or remediation recommended. "
+                fallback_summary += "The detected defects pose safety concerns that require attention before use."
+            elif verdict_str == "SAFE":
+                fallback_summary += "\n\nFINAL RECOMMENDATION\n\n"
+                fallback_summary += f"Verdict: {verdict_str}\n"
+                fallback_summary += "Action Required: No immediate action required. "
+                fallback_summary += "The item appears safe for use based on the analysis."
+            else:
+                fallback_summary += "\n\nFINAL RECOMMENDATION\n\n"
+                fallback_summary += f"Verdict: {verdict_str}\n"
+                fallback_summary += "Action Required: Human review recommended to make final determination."
             
             sections["SUMMARY"] = fallback_summary
-            logger.info("Generated fallback SUMMARY from structured data")
+            logger.info("Generated comprehensive fallback SUMMARY from structured data")
         
         # Section header style
         section_header_style = ParagraphStyle(
@@ -835,15 +924,195 @@ class InspectionReport:
         )
         
         # Display each section with proper formatting
+        # Include FINAL RECOMMENDATION if present (may be parsed separately)
         section_order = [
             "SUMMARY",
+            "EXECUTIVE SUMMARY",  # Also check for this variant
             "KEY TAKEAWAYS",
             "RECOMMENDATIONS",
+            "FINAL RECOMMENDATION",  # Ensure this is included
             "REASONING CHAINS",
             "INSPECTOR ANALYSIS",
             "AUDITOR VERIFICATION",
             "COUNTERFACTUAL"
         ]
+        
+        # ALWAYS enhance SUMMARY with structured data for comprehensive details
+        # Even if summary exists, add structured details to make it more comprehensive
+        inspector = state.get("inspector_result", {})
+        auditor = state.get("auditor_result", {})
+        object_name = inspector.get("object_identified") or auditor.get("object_identified", "component")
+        agreement_score = consensus.get("agreement_score", 0)
+        models_agree = consensus.get("models_agree", False)
+        inspector_conf = inspector.get("overall_confidence", "unknown").title()
+        auditor_conf = auditor.get("overall_confidence", "unknown").title()
+        moderate_count = sum(1 for d in consensus.get("combined_defects", []) if d.get("safety_impact") == "MODERATE")
+        cosmetic_count = sum(1 for d in consensus.get("combined_defects", []) if d.get("safety_impact") == "COSMETIC")
+        
+        # Get model names
+        from utils.config import Config
+        config = Config()
+        inspector_model = config.vlm_inspector_model.split('/')[-1] if config.vlm_inspector_model else "Unknown"
+        auditor_model = config.vlm_auditor_model.split('/')[-1] if config.vlm_auditor_model else "Unknown"
+        
+        # Get defect details for comprehensive summary
+        defects = consensus.get("combined_defects", [])
+        defect_types = {}
+        for defect in defects:
+            defect_type = defect.get("type", "Unknown")
+            severity = defect.get("safety_impact", "UNKNOWN")
+            if defect_type not in defect_types:
+                defect_types[defect_type] = {"CRITICAL": 0, "MODERATE": 0, "COSMETIC": 0}
+            defect_types[defect_type][severity] = defect_types[defect_type].get(severity, 0) + 1
+        
+        # Get processing time
+        processing_time = state.get("processing_time", 0)
+        
+        if "SUMMARY" in sections and sections["SUMMARY"].strip():
+            summary_text = sections["SUMMARY"].strip()
+            # Enhance with structured data for comprehensive details
+            enhanced_summary = (
+                f"{summary_text}\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"DETAILED INSPECTION FINDINGS\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"OBJECT ANALYSIS:\n"
+                f"• Object Identified: {object_name}\n"
+                f"• Criticality Level: {context.get('criticality', 'unknown').upper()}\n"
+                f"• Domain: {context.get('domain') or 'General'}\n"
+                f"• Processing Time: {processing_time:.2f} seconds\n\n"
+                f"DEFECT ANALYSIS:\n"
+                f"• Total Defects Found: {defect_count}\n"
+                f"  - Critical Defects: {critical_count} (require immediate attention)\n"
+                f"  - Moderate Defects: {moderate_count} (need monitoring)\n"
+                f"  - Cosmetic Defects: {cosmetic_count} (documentation only)\n\n"
+            )
+            
+            # Add defect type breakdown
+            if defect_types:
+                enhanced_summary += f"DEFECT TYPE BREAKDOWN:\n"
+                for defect_type, counts in defect_types.items():
+                    total = sum(counts.values())
+                    enhanced_summary += f"• {defect_type}: {total} total"
+                    if counts["CRITICAL"] > 0:
+                        enhanced_summary += f" ({counts['CRITICAL']} critical"
+                        if counts["MODERATE"] > 0 or counts["COSMETIC"] > 0:
+                            enhanced_summary += f", {counts['MODERATE']} moderate, {counts['COSMETIC']} cosmetic"
+                        enhanced_summary += ")"
+                    elif counts["MODERATE"] > 0:
+                        enhanced_summary += f" ({counts['MODERATE']} moderate"
+                        if counts["COSMETIC"] > 0:
+                            enhanced_summary += f", {counts['COSMETIC']} cosmetic"
+                        enhanced_summary += ")"
+                    elif counts["COSMETIC"] > 0:
+                        enhanced_summary += f" ({counts['COSMETIC']} cosmetic)"
+                    enhanced_summary += "\n"
+                enhanced_summary += "\n"
+            
+            enhanced_summary += (
+                f"MODEL CONSENSUS ANALYSIS:\n"
+                f"• Inspector Model: {inspector_model}\n"
+                f"• Auditor Model: {auditor_model}\n"
+                f"• Models Agreement: {'✓ Agreed' if models_agree else '⚠ Disagreed'}\n"
+                f"• Agreement Score: {agreement_score:.1%}\n"
+                f"• Inspector Confidence: {inspector_conf}\n"
+                f"• Auditor Confidence: {auditor_conf}\n\n"
+                f"FINAL VERDICT:\n"
+                f"• Safety Verdict: {verdict.get('verdict', 'UNKNOWN')}\n"
+                f"• Human Review Required: {'Yes' if verdict.get('requires_human') else 'No'}\n"
+            )
+            
+            if verdict.get('verdict') == "UNSAFE":
+                enhanced_summary += (
+                    f"• Action Required: Further inspection or remediation recommended. "
+                    f"The detected defects pose safety concerns that require attention before use.\n"
+                )
+            elif verdict.get('verdict') == "SAFE":
+                enhanced_summary += (
+                    f"• Action Required: No immediate action required. "
+                    f"The item appears safe for use based on the comprehensive analysis.\n"
+                )
+            else:
+                enhanced_summary += (
+                    f"• Action Required: Human review recommended to make final determination.\n"
+                )
+            
+            sections["SUMMARY"] = enhanced_summary
+            logger.info("Enhanced SUMMARY with comprehensive structured data")
+        else:
+            # If no SUMMARY, create comprehensive one from structured data
+            comprehensive_summary = (
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"EXECUTIVE SUMMARY\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"OBJECT ANALYSIS:\n"
+                f"• Object Identified: {object_name}\n"
+                f"• Criticality Level: {context.get('criticality', 'unknown').upper()}\n"
+                f"• Domain: {context.get('domain') or 'General'}\n"
+                f"• Processing Time: {processing_time:.2f} seconds\n\n"
+                f"DEFECT ANALYSIS:\n"
+                f"• Total Defects Found: {defect_count}\n"
+                f"  - Critical Defects: {critical_count} (require immediate attention)\n"
+                f"  - Moderate Defects: {moderate_count} (need monitoring)\n"
+                f"  - Cosmetic Defects: {cosmetic_count} (documentation only)\n\n"
+            )
+            
+            # Add defect type breakdown
+            if defect_types:
+                comprehensive_summary += f"DEFECT TYPE BREAKDOWN:\n"
+                for defect_type, counts in defect_types.items():
+                    total = sum(counts.values())
+                    comprehensive_summary += f"• {defect_type}: {total} total"
+                    if counts["CRITICAL"] > 0:
+                        comprehensive_summary += f" ({counts['CRITICAL']} critical"
+                        if counts["MODERATE"] > 0 or counts["COSMETIC"] > 0:
+                            comprehensive_summary += f", {counts['MODERATE']} moderate, {counts['COSMETIC']} cosmetic"
+                        comprehensive_summary += ")"
+                    elif counts["MODERATE"] > 0:
+                        comprehensive_summary += f" ({counts['MODERATE']} moderate"
+                        if counts["COSMETIC"] > 0:
+                            comprehensive_summary += f", {counts['COSMETIC']} cosmetic"
+                        comprehensive_summary += ")"
+                    elif counts["COSMETIC"] > 0:
+                        comprehensive_summary += f" ({counts['COSMETIC']} cosmetic)"
+                    comprehensive_summary += "\n"
+                comprehensive_summary += "\n"
+            
+            comprehensive_summary += (
+                f"MODEL CONSENSUS ANALYSIS:\n"
+                f"• Inspector Model: {inspector_model}\n"
+                f"• Auditor Model: {auditor_model}\n"
+                f"• Models Agreement: {'✓ Agreed' if models_agree else '⚠ Disagreed'}\n"
+                f"• Agreement Score: {agreement_score:.1%}\n"
+                f"• Inspector Confidence: {inspector_conf}\n"
+                f"• Auditor Confidence: {auditor_conf}\n\n"
+                f"═══════════════════════════════════════════════════════════════\n"
+                f"FINAL RECOMMENDATION\n"
+                f"═══════════════════════════════════════════════════════════════\n\n"
+                f"Verdict: {verdict.get('verdict', 'UNKNOWN')}\n"
+                f"Human Review Required: {'Yes' if verdict.get('requires_human') else 'No'}\n\n"
+            )
+            
+            if verdict.get('verdict') == "UNSAFE":
+                comprehensive_summary += (
+                    "Action Required: Further inspection or remediation recommended. "
+                    "The detected defects pose safety concerns that require attention before use. "
+                    "Immediate action is recommended to address critical defects identified in this inspection."
+                )
+            elif verdict.get('verdict') == "SAFE":
+                comprehensive_summary += (
+                    "Action Required: No immediate action required. "
+                    "The item appears safe for use based on the comprehensive analysis performed by both "
+                    "Inspector and Auditor models. All safety gates passed successfully."
+                )
+            else:
+                comprehensive_summary += (
+                    "Action Required: Human review recommended to make final determination. "
+                    "The automated analysis requires expert evaluation to confirm the safety verdict."
+                )
+            
+            sections["SUMMARY"] = comprehensive_summary
+            logger.info("Created comprehensive SUMMARY from structured data")
         
         # Track which sections we've displayed
         displayed_sections = set()
@@ -888,12 +1157,48 @@ class InspectionReport:
                                 elements.append(Paragraph(line, self.styles["CustomBodyText"]))
                 else:
                     # Default: display as paragraph with preserved structure
-                    # Split into logical chunks (paragraphs separated by blank lines)
-                    paragraphs = section_content.split("\n\n")
-                    for para in paragraphs:
-                        para = para.strip().replace("\n", " ")  # Normalize whitespace
-                        if para:
-                            elements.append(Paragraph(para, self.styles["CustomBodyText"]))
+                    # For SUMMARY section, preserve line breaks for better readability
+                    if section_name == "SUMMARY":
+                        # Split by lines to preserve structure (especially for detailed summaries)
+                        lines = section_content.split("\n")
+                        current_para = []
+                        for line in lines:
+                            line = line.strip()
+                            if not line:
+                                # Empty line - end current paragraph
+                                if current_para:
+                                    para_text = " ".join(current_para)
+                                    elements.append(Paragraph(para_text, self.styles["CustomBodyText"]))
+                                    current_para = []
+                                elements.append(Spacer(1, 0.1 * inch))
+                            elif line.startswith("•") or line.startswith("-") or line.startswith("*"):
+                                # Bullet point - end current para and add bullet
+                                if current_para:
+                                    para_text = " ".join(current_para)
+                                    elements.append(Paragraph(para_text, self.styles["CustomBodyText"]))
+                                    current_para = []
+                                elements.append(Paragraph(line, self.styles["CustomBodyText"]))
+                            elif line.startswith("═") or line.startswith("="):
+                                # Separator line - skip or make it bold
+                                if current_para:
+                                    para_text = " ".join(current_para)
+                                    elements.append(Paragraph(para_text, self.styles["CustomBodyText"]))
+                                    current_para = []
+                                # Skip separator lines or make them subtle
+                            else:
+                                # Regular line - add to current paragraph
+                                current_para.append(line)
+                        # End last paragraph
+                        if current_para:
+                            para_text = " ".join(current_para)
+                            elements.append(Paragraph(para_text, self.styles["CustomBodyText"]))
+                    else:
+                        # Split into logical chunks (paragraphs separated by blank lines)
+                        paragraphs = section_content.split("\n\n")
+                        for para in paragraphs:
+                            para = para.strip().replace("\n", " ")  # Normalize whitespace
+                            if para:
+                                elements.append(Paragraph(para, self.styles["CustomBodyText"]))
                 
                 elements.append(Spacer(1, 0.15 * inch))
         
@@ -919,13 +1224,24 @@ class InspectionReport:
                 
                 elements.append(Spacer(1, 0.15 * inch))
         
-        # If no sections were parsed or explanation is empty, log warning
+        # If no sections were parsed or explanation is empty, display full explanation text
         if not displayed_sections and not additional_sections:
-            logger.warning("No sections were parsed from explanation. Displaying raw text as fallback.")
-            display_text = explanation if explanation else "Explanation not available."
-            # Clean any residual markdown
-            display_text = display_text.replace("**", "").replace("##", "").replace("#", "")
-            elements.append(Paragraph(display_text, self.styles["CustomBodyText"]))
+            logger.warning("No sections were parsed from explanation. Displaying full explanation text.")
+            if explanation and explanation.strip():
+                # Display the full explanation text, preserving structure
+                display_text = explanation.strip()
+                # Clean markdown but preserve structure
+                display_text = display_text.replace("**", "").replace("##", "").replace("#", "")
+                # Split into paragraphs for better readability
+                paragraphs = display_text.split("\n\n")
+                for para in paragraphs:
+                    para = para.strip()
+                    if para:
+                        # Preserve line breaks within paragraphs
+                        para = para.replace("\n", " ")
+                        elements.append(Paragraph(para, self.styles["CustomBodyText"]))
+            else:
+                elements.append(Paragraph("Explanation not available.", self.styles["CustomBodyText"]))
         
         elements.append(Spacer(1, 0.2 * inch))
         
@@ -973,7 +1289,12 @@ class InspectionReport:
             if defects:
                 boxes = []
                 for i, defect in enumerate(defects, 1):
-                    bbox = defect.get("bbox", {})
+                    bbox = defect.get("bbox")
+                    # Handle case where bbox is None or not a dict
+                    if bbox is None or not isinstance(bbox, dict):
+                        # Skip defects without valid bbox
+                        self.logger.warning(f"Defect #{i} has no valid bbox, skipping annotation")
+                        continue
                     boxes.append({
                         "x": bbox.get("x", 0),
                         "y": bbox.get("y", 0),
@@ -983,14 +1304,21 @@ class InspectionReport:
                         "severity": defect.get("safety_impact", "MODERATE"),
                         "confidence": defect.get("confidence", "medium")  # Include confidence for filtering
                     })
-                # Pass criticality and confidence_threshold for filtering
-                draw_bounding_boxes(
-                    image_path, 
-                    boxes, 
-                    annotated_path,
-                    confidence_threshold="low",  # Include all, but visual distinction
-                    criticality=criticality
-                )
+                
+                # Only draw boxes if we have valid ones
+                if boxes:
+                    # Pass criticality and confidence_threshold for filtering
+                    draw_bounding_boxes(
+                        image_path, 
+                        boxes, 
+                        annotated_path,
+                        confidence_threshold="low",  # Include all, but visual distinction
+                        criticality=criticality
+                    )
+                else:
+                    # No valid boxes - just copy original
+                    import shutil
+                    shutil.copy(image_path, annotated_path)
             else:
                 # No defects - just copy original
                 import shutil

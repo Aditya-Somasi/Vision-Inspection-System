@@ -702,9 +702,9 @@
 2. **Executive Summary** (Always First)
    - Key metrics table (defect count, criticality, verdict)
    - 2-3 sentence narrative summary (from `analysis_reasoning` or fallback)
-   - **Enhancement**: If summary missing, generate from structured data: `"Inspection of {object} identified {defect_count} defect(s). {Verdict: SAFE/UNSAFE/REVIEW}."`
+   - **Enhancement**: If summary missing, generate from structured data: `"Inspection of {object} identified {defect_count} defect(s). {Verdict: SAFE/UNSAFE/REVIEW}."`****
 
-3. **Visual Evidence** (3-Panel Layout)
+3. **Visual Evidence** (**3**-Panel Layout)
    - Original, Heatmap, Annotated (current implementation is good)
    - **Enhancement**: Add confidence indicators on annotated image (dashed lines for low confidence)
 
