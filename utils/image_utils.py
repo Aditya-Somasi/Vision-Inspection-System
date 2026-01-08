@@ -169,31 +169,45 @@ def draw_bounding_boxes(
     
     img_height, img_width = img.shape[:2]
     
-    # VLM models receive images resized to max 1024px
-    # We need to scale coordinates from model space to original image space
-    MODEL_MAX_SIZE = 1024
-    original_max_dim = max(img_width, img_height)
-    if original_max_dim > MODEL_MAX_SIZE:
-        scale_factor = original_max_dim / MODEL_MAX_SIZE
-    else:
-        scale_factor = 1.0
+    # VLM now returns PERCENTAGE-BASED coordinates (0-100)
+    # We convert percentages to actual pixel positions
+    # This is more reliable than VLMs returning absolute pixels
     
     for i, box in enumerate(boxes):
-        # Get coordinates from model
+        # Get percentage coordinates from model (0-100 range)
         raw_x = box.get("x", 0)
         raw_y = box.get("y", 0)
-        raw_w = box.get("width", 100)
-        raw_h = box.get("height", 100)
+        raw_w = box.get("width", 10)
+        raw_h = box.get("height", 10)
         
-        # Scale coordinates
-        x = max(0, int(raw_x * scale_factor))
-        y = max(0, int(raw_y * scale_factor))
-        w = int(raw_w * scale_factor)
-        h = int(raw_h * scale_factor)
+        # Detect if values are percentages (0-100) or already pixels (>100)
+        # If all values are <=100, treat as percentages
+        # If any value >100, treat as legacy pixel format and scale
+        is_percentage = all(v <= 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
+        
+        if is_percentage:
+            # Convert percentage to pixels
+            x = int((raw_x / 100.0) * img_width)
+            y = int((raw_y / 100.0) * img_height)
+            w = int((raw_w / 100.0) * img_width)
+            h = int((raw_h / 100.0) * img_height)
+        else:
+            # Legacy format: scale from model image size to original
+            MODEL_MAX_SIZE = 1024
+            original_max_dim = max(img_width, img_height)
+            scale_factor = original_max_dim / MODEL_MAX_SIZE if original_max_dim > MODEL_MAX_SIZE else 1.0
+            x = max(0, int(raw_x * scale_factor))
+            y = max(0, int(raw_y * scale_factor))
+            w = int(raw_w * scale_factor)
+            h = int(raw_h * scale_factor)
+        
+        # Ensure minimum size for visibility
+        w = max(w, 20)
+        h = max(h, 20)
         
         # Clamp to image bounds
-        x = min(x, img_width - 10)
-        y = min(y, img_height - 10)
+        x = min(max(0, x), img_width - 10)
+        y = min(max(0, y), img_height - 10)
         w = min(w, img_width - x)
         h = min(h, img_height - y)
         
@@ -310,8 +324,14 @@ def create_heatmap_overlay(
         bbox = defect.get("bbox", {})
         severity = defect.get("safety_impact", "MODERATE")
         
-        # Determine heat intensity based on severity
-        intensity = 1.0 if severity == "CRITICAL" else 0.7 if severity == "MODERATE" else 0.4
+        # Determine heat intensity based on severity (using user's weight mapping)
+        severity_weight = {
+            'CRITICAL': 1.0,
+            'MODERATE': 0.6,
+            'COSMETIC': 0.3,
+            'MINOR': 0.3
+        }
+        intensity = severity_weight.get(severity, 0.5)
         
         # Check for widespread defects (no bbox)
         widespread_keywords = ["entire surface", "everywhere", "whole component", "complete surface"]
@@ -327,71 +347,80 @@ def create_heatmap_overlay(
                         any(kw in location_lower for kw in widespread_keywords))
         
         if is_widespread:
-            # Add general heat to the center area
+            # Add general heat to the entire image with gradient from center
             center_x, center_y = width // 2, height // 2
-            axes = (int(width * 0.4), int(height * 0.4))
-            cv2.ellipse(heat_mask, (center_x, center_y), axes, 0, 0, 360, intensity, -1)
+            radius = max(width, height) // 2
+            
+            # Create Gaussian blob for widespread defect
+            y_coords, x_coords = np.ogrid[:height, :width]
+            dist_sq = (x_coords - center_x)**2 + (y_coords - center_y)**2
+            gaussian = intensity * np.exp(-dist_sq / (2 * (radius * 0.7)**2))
+            heat_mask = np.maximum(heat_mask, gaussian.astype(np.float32))
             continue
             
         if has_valid_bbox:
-            # Extract and scale coordinates
+            # Extract coordinates (now percentage-based 0-100)
             raw_x = bbox.get("x", 0)
             raw_y = bbox.get("y", 0)
-            raw_w = bbox.get("width", 100)
-            raw_h = bbox.get("height", 100)
+            raw_w = bbox.get("width", 10)
+            raw_h = bbox.get("height", 10)
             
-            x = int(raw_x * scale_factor)
-            y = int(raw_y * scale_factor)
-            w = int(raw_w * scale_factor)
-            h = int(raw_h * scale_factor)
+            # Detect if values are percentages (0-100) or legacy pixels (>100)
+            is_percentage = all(v <= 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
             
-            # Center of the defect
+            if is_percentage:
+                # Convert percentage to pixels
+                x = int((raw_x / 100.0) * width)
+                y = int((raw_y / 100.0) * height)
+                w = int((raw_w / 100.0) * width)
+                h = int((raw_h / 100.0) * height)
+            else:
+                # Legacy format: scale from model image size
+                x = int(raw_x * scale_factor)
+                y = int(raw_y * scale_factor)
+                w = int(raw_w * scale_factor)
+                h = int(raw_h * scale_factor)
+            
+            # Ensure minimum size for visibility
+            w = max(w, 20)
+            h = max(h, 20)
+            
+            # Calculate center of defect
             center_x = x + w // 2
             center_y = y + h // 2
             
-            # Draw an ellipse for the hotspot (more natural than rectangle)
-            # Size proportional to the defect area, but enforce a minimum size for visibility
-            min_dim = min(width, height)
-            min_axis = int(min_dim * 0.08) # Min 8% of image size
+            # Calculate radius for Gaussian blob (like user's code)
+            radius = max(w, h)
             
-            axis_x = max(int(w * 0.8), min_axis)
-            axis_y = max(int(h * 0.8), min_axis)
+            # TRUE GAUSSIAN BLOB CALCULATION (vectorized for speed)
+            # Create coordinate grids for the entire image
+            y_coords, x_coords = np.ogrid[:height, :width]
             
-            axes = (axis_x, axis_y)
-            cv2.ellipse(heat_mask, (center_x, center_y), axes, 0, 0, 360, intensity, -1)
+            # Calculate squared distance from center
+            dist_sq = (x_coords - center_x)**2 + (y_coords - center_y)**2
+            
+            # Calculate Gaussian intensity based on distance
+            # Using radius * 1.5 as sigma for smooth falloff
+            sigma = radius * 0.8
+            gaussian = intensity * np.exp(-dist_sq / (2 * sigma**2))
+            
+            # Only apply within 2x radius for efficiency
+            mask = dist_sq < (radius * 2.5)**2
+            heat_mask = np.where(mask, np.maximum(heat_mask, gaussian.astype(np.float32)), heat_mask)
 
     if not has_defects:
         # Just save original if no defects
         cv2.imwrite(str(output_path), img)
         return output_path
 
-    # Apply heavy Gaussian blur to create the smooth thermal gradient look
-    # Blur size proportional to image size
-    blur_ksize = int(min(width, height) * 0.15) | 1  # Must be odd
-    heat_mask = cv2.GaussianBlur(heat_mask, (blur_ksize, blur_ksize), 0)
-    
-    # Normalize mask to 0-255 range for colormap application
-    heat_mask_norm = cv2.normalize(heat_mask, None, 0, 255, cv2.NORM_MINMAX)
-    heat_mask_uint8 = heat_mask_norm.astype(np.uint8)
+    # Normalize heat mask to 0-255 for colormap
+    heat_mask_norm = (heat_mask * 255).astype(np.uint8)
     
     # Apply JET colormap (Classic thermal look: Blue -> Cyan -> Yellow -> Red)
-    heatmap_color = cv2.applyColorMap(heat_mask_uint8, cv2.COLORMAP_JET)
+    heatmap_color = cv2.applyColorMap(heat_mask_norm, cv2.COLORMAP_JET)
     
-    # Create an opacity mask where there is heat (so cold/blue areas don't darken the image)
-    # We want "no heat" to be transparent, not blue
-    # The mask itself (before colormap) is perfect for opacity
-    opacity = heat_mask.copy()
-    np.clip(opacity, 0, 0.6, out=opacity) # Cap opacity at 0.6
-    
-    # Blend manually for better control
-    # destination = src1 * (1 - alpha) + src2 * alpha
-    heatmap_overlay = img.copy()
-    
-    for c in range(3):
-        heatmap_overlay[:, :, c] = (
-            img[:, :, c] * (1.0 - opacity) + 
-            heatmap_color[:, :, c] * opacity
-        )
+    # Blend with original (40% heatmap, 60% original - like user's code)
+    heatmap_overlay = cv2.addWeighted(img, 0.6, heatmap_color, 0.4, 0)
         
     cv2.imwrite(str(output_path), heatmap_overlay)
     

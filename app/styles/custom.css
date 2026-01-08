@@ -1,0 +1,420 @@
+/*
+ * Vision Inspection System - Professional UI Styles
+ * Modern, clean aesthetic for industrial inspection applications
+ */
+
+/* ============================================================================
+   ROOT VARIABLES & THEME
+   ============================================================================ */
+:root {
+    --primary-color: #1e40af;
+    --primary-light: #3b82f6;
+    --secondary-color: #475569;
+    --success-color: #059669;
+    --success-light: #10b981;
+    --danger-color: #dc2626;
+    --danger-light: #ef4444;
+    --warning-color: #d97706;
+    --warning-light: #f59e0b;
+    --info-color: #0284c7;
+
+    --bg-primary: #f8fafc;
+    --bg-secondary: #f1f5f9;
+    --bg-card: #ffffff;
+    --text-primary: #1e293b;
+    --text-secondary: #64748b;
+    --border-color: #e2e8f0;
+
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 1rem;
+}
+
+/* ============================================================================
+   LAYOUT & CONTAINER
+   ============================================================================ */
+.block-container {
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+    max-width: 1400px;
+}
+
+/* Hide only footer, keep MainMenu visible for theme settings */
+footer {
+    visibility: hidden;
+}
+
+/* ============================================================================
+   VERDICT BANNERS
+   ============================================================================ */
+.verdict-safe {
+    background: linear-gradient(135deg, var(--success-light), var(--success-color));
+    padding: 1.5rem 2rem;
+    border-radius: var(--radius-lg);
+    color: white;
+    font-size: 1.5rem;
+    font-weight: 700;
+    text-align: center;
+    margin: 1rem 0;
+    box-shadow: 0 8px 16px rgba(16, 185, 129, 0.4);
+    border: 3px solid var(--success-color);
+}
+
+.verdict-unsafe {
+    background: linear-gradient(135deg, var(--danger-light), var(--danger-color));
+    padding: 1.5rem 2rem;
+    border-radius: var(--radius-lg);
+    color: white;
+    font-size: 1.5rem;
+    font-weight: 700;
+    text-align: center;
+    margin: 1rem 0;
+    box-shadow: 0 8px 16px rgba(239, 68, 68, 0.4);
+    border: 3px solid var(--danger-color);
+}
+
+.verdict-review {
+    background: linear-gradient(135deg, var(--warning-light), var(--warning-color));
+    padding: 1.5rem 2rem;
+    border-radius: var(--radius-lg);
+    color: white;
+    font-size: 1.5rem;
+    font-weight: 700;
+    text-align: center;
+    margin: 1rem 0;
+    box-shadow: 0 8px 16px rgba(245, 158, 11, 0.4);
+    border: 3px solid var(--warning-color);
+}
+
+/* All Clear Success Banner */
+.all-clear-banner {
+    background: linear-gradient(135deg, var(--success-light), var(--success-color), var(--success-light));
+    padding: 2rem;
+    border-radius: var(--radius-lg);
+    color: white;
+    text-align: center;
+    margin: 1.5rem 0;
+    box-shadow: 0 8px 20px rgba(16, 185, 129, 0.5);
+    border: 4px solid var(--success-color);
+    animation: pulse-green 2s infinite;
+}
+
+@keyframes pulse-green {
+
+    0%,
+    100% {
+        box-shadow: 0 8px 20px rgba(16, 185, 129, 0.5);
+    }
+
+    50% {
+        box-shadow: 0 8px 30px rgba(16, 185, 129, 0.8);
+    }
+}
+
+/* ============================================================================
+   CONFIDENCE BARS
+   ============================================================================ */
+.confidence-bar-container {
+    background: var(--bg-secondary);
+    border-radius: var(--radius-md);
+    height: 24px;
+    overflow: hidden;
+    margin: 0.5rem 0;
+}
+
+.confidence-bar {
+    height: 100%;
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 0.75rem;
+    font-weight: 600;
+    transition: width 0.5s ease-out;
+}
+
+.confidence-high {
+    background: linear-gradient(90deg, var(--success-light), var(--success-color));
+}
+
+.confidence-medium {
+    background: linear-gradient(90deg, var(--warning-light), var(--warning-color));
+}
+
+.confidence-low {
+    background: linear-gradient(90deg, var(--danger-light), var(--danger-color));
+}
+
+/* ============================================================================
+   GATE STATUS BADGES
+   ============================================================================ */
+.gate-passed {
+    background: #dcfce7;
+    color: #166534;
+    padding: 0.25rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 600;
+    display: inline-block;
+    margin: 0.125rem;
+}
+
+.gate-failed {
+    background: #fee2e2;
+    color: #991b1b;
+    padding: 0.25rem 0.75rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 600;
+    display: inline-block;
+    margin: 0.125rem;
+}
+
+/* ============================================================================
+   CARDS & PANELS
+   ============================================================================ */
+.info-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+    margin: 0.75rem 0;
+    box-shadow: var(--shadow-sm);
+}
+
+.info-card:hover {
+    box-shadow: var(--shadow-md);
+    transition: box-shadow 0.2s ease;
+}
+
+.metric-card {
+    background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    text-align: center;
+}
+
+/* ============================================================================
+   SEVERITY BADGES
+   ============================================================================ */
+.severity-critical {
+    background: linear-gradient(135deg, var(--danger-light), var(--danger-color));
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.severity-moderate {
+    background: linear-gradient(135deg, var(--warning-light), var(--warning-color));
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.severity-cosmetic {
+    background: linear-gradient(135deg, var(--info-color), #0369a1);
+    color: white;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+/* ============================================================================
+   SYSTEM STATUS
+   ============================================================================ */
+.status-online {
+    background: #dcfce7;
+    color: #166534;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.status-offline {
+    background: #fee2e2;
+    color: #991b1b;
+    padding: 0.25rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+/* ============================================================================
+   CHAT INTERFACE
+   ============================================================================ */
+.chat-container {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 1rem;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.chat-message {
+    padding: 0.75rem 1rem;
+    margin: 0.5rem 0;
+    border-radius: var(--radius-md);
+    max-width: 80%;
+}
+
+.chat-message.user {
+    background: var(--primary-color);
+    color: white;
+    margin-left: auto;
+}
+
+.chat-message.assistant {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+}
+
+/* Typing indicator */
+.typing-indicator {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.75rem 1rem;
+}
+
+.typing-dot {
+    width: 8px;
+    height: 8px;
+    background: var(--text-secondary);
+    border-radius: 50%;
+    animation: typing-bounce 1.4s infinite ease-in-out both;
+}
+
+.typing-dot:nth-child(1) {
+    animation-delay: -0.32s;
+}
+
+.typing-dot:nth-child(2) {
+    animation-delay: -0.16s;
+}
+
+.typing-dot:nth-child(3) {
+    animation-delay: 0s;
+}
+
+@keyframes typing-bounce {
+
+    0%,
+    80%,
+    100% {
+        transform: scale(0.8);
+        opacity: 0.5;
+    }
+
+    40% {
+        transform: scale(1);
+        opacity: 1;
+    }
+}
+
+/* ============================================================================
+   PROGRESS STEPPER
+   ============================================================================ */
+.stepper {
+    display: flex;
+    justify-content: space-between;
+    margin: 1rem 0;
+}
+
+.stepper-step {
+    flex: 1;
+    text-align: center;
+    position: relative;
+}
+
+.stepper-step::after {
+    content: '';
+    position: absolute;
+    top: 15px;
+    left: 50%;
+    width: 100%;
+    height: 2px;
+    background: var(--border-color);
+}
+
+.stepper-step:last-child::after {
+    display: none;
+}
+
+.stepper-icon {
+    width: 32px;
+    height: 32px;
+    background: var(--bg-secondary);
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    z-index: 1;
+    font-size: 0.875rem;
+}
+
+.stepper-icon.active {
+    background: var(--primary-color);
+    color: white;
+}
+
+.stepper-icon.complete {
+    background: var(--success-color);
+    color: white;
+}
+
+.stepper-label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+}
+
+/* ============================================================================
+   BUTTONS & INTERACTIONS
+   ============================================================================ */
+.stButton>button {
+    border-radius: var(--radius-md);
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.stButton>button:hover {
+    transform: translateY(-1px);
+    box-shadow: var(--shadow-md);
+}
+
+/* Primary button enhancement */
+.stButton>button[kind="primary"] {
+    background: linear-gradient(135deg, var(--primary-light), var(--primary-color));
+    border: none;
+}
+
+/* ============================================================================
+   RESPONSIVE ADJUSTMENTS
+   ============================================================================ */
+@media (max-width: 768px) {
+
+    .verdict-safe,
+    .verdict-unsafe,
+    .verdict-review {
+        font-size: 1.25rem;
+        padding: 1rem 1.5rem;
+    }
+
+    .stepper-label {
+        display: none;
+    }
+}

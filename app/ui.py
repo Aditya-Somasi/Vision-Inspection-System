@@ -24,6 +24,19 @@ from src.chat_memory import get_memory_manager, get_session_history
 from utils.logger import setup_logger
 from src.reporting import generate_report
 
+# Import modular components
+from app.components.verdict_display import (
+    render_verdict_banner,
+    render_confidence_bar,
+    render_gate_results,
+    render_confidence_metrics,
+    render_defect_summary
+)
+from app.components.decision_support import render_decision_support
+from app.components.chat_widget import chat_widget, clear_chat
+from app.services.file_handler import save_uploaded_file, validate_image
+from app.services.session_manager import init_session_state, get_state, set_state
+
 # Configure page
 st.set_page_config(
     page_title=config.app_title,
@@ -32,408 +45,40 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for enhanced UI
-st.markdown("""
-<style>
-    /* Enhanced Verdict banners */
-    .verdict-safe {
-        background: linear-gradient(135deg, #10b981, #059669);
-        padding: 1.5rem 2rem;
-        border-radius: 1rem;
-        color: white;
-        font-size: 1.5rem;
-        font-weight: bold;
-        text-align: center;
-        margin: 1rem 0;
-        box-shadow: 0 8px 16px rgba(16, 185, 129, 0.4);
-        border: 3px solid #059669;
-    }
-    .verdict-unsafe {
-        background: linear-gradient(135deg, #ef4444, #dc2626);
-        padding: 1.5rem 2rem;
-        border-radius: 1rem;
-        color: white;
-        font-size: 1.5rem;
-        font-weight: bold;
-        text-align: center;
-        margin: 1rem 0;
-        box-shadow: 0 8px 16px rgba(239, 68, 68, 0.4);
-        border: 3px solid #dc2626;
-    }
-    .verdict-review {
-        background: linear-gradient(135deg, #f59e0b, #d97706);
-        padding: 1.5rem 2rem;
-        border-radius: 1rem;
-        color: white;
-        font-size: 1.5rem;
-        font-weight: bold;
-        text-align: center;
-        margin: 1rem 0;
-        box-shadow: 0 8px 16px rgba(245, 158, 11, 0.4);
-        border: 3px solid #d97706;
-    }
-    
-    /* ALL CLEAR banner for safe images */
-    .all-clear-banner {
-        background: linear-gradient(135deg, #10b981, #059669, #10b981);
-        padding: 2rem;
-        border-radius: 1rem;
-        color: white;
-        text-align: center;
-        margin: 1.5rem 0;
-        box-shadow: 0 8px 20px rgba(16, 185, 129, 0.5);
-        border: 4px solid #059669;
-        animation: pulse-green 2s infinite;
-    }
-    @keyframes pulse-green {
-        0%, 100% { box-shadow: 0 8px 20px rgba(16, 185, 129, 0.5); }
-        50% { box-shadow: 0 8px 30px rgba(16, 185, 129, 0.8); }
-    }
-    
-    /* Confidence Progress Bars */
-    .confidence-bar-container {
-        background: #e5e7eb;
-        border-radius: 0.5rem;
-        height: 24px;
-        overflow: hidden;
-        margin: 0.5rem 0;
-    }
-    .confidence-bar {
-        height: 100%;
-        border-radius: 0.5rem;
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        padding-right: 0.5rem;
-        font-size: 0.75rem;
-        font-weight: bold;
-        color: white;
-        transition: width 0.5s ease;
-    }
-    .confidence-high { background: linear-gradient(90deg, #22c55e, #16a34a); }
-    .confidence-medium { background: linear-gradient(90deg, #eab308, #ca8a04); }
-    .confidence-low { background: linear-gradient(90deg, #ef4444, #dc2626); }
-    
-    /* Gate Status Badges */
-    .gate-passed {
-        background: #dcfce7;
-        color: #166534;
-        padding: 0.25rem 0.75rem;
-        border-radius: 0.25rem;
-        font-size: 0.75rem;
-        font-weight: 600;
-        display: inline-block;
-        margin: 0.125rem;
-    }
-    .gate-failed {
-        background: #fee2e2;
-        color: #991b1b;
-        padding: 0.25rem 0.75rem;
-        border-radius: 0.25rem;
-        font-size: 0.75rem;
-        font-weight: 600;
-        display: inline-block;
-        margin: 0.125rem;
-    }
-    
-    /* Metric cards */
-    .metric-card {
-        background: linear-gradient(135deg, #f8fafc, #f1f5f9);
-        padding: 1.5rem;
-        border-radius: 0.75rem;
-        border: 1px solid #e2e8f0;
-        margin-bottom: 1rem;
-    }
-    
-    /* Defect severity badges */
-    .severity-critical {
-        background: #fee2e2;
-        color: #991b1b;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-    .severity-moderate {
-        background: #fef3c7;
-        color: #92400e;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-    .severity-cosmetic {
-        background: #dbeafe;
-        color: #1e40af;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-    
-    /* Improved spacing */
-    .block-container {
-        padding-top: 2rem;
-    }
-    
-    /* Hide Streamlit branding */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    
-    /* System status badges */
-    .status-online {
-        background: #dcfce7;
-        color: #166534;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        display: inline-block;
-    }
-    .status-offline {
-        background: #fee2e2;
-        color: #991b1b;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        font-size: 0.75rem;
-        font-weight: 600;
-        display: inline-block;
-    }
-    
-    /* Agent stream container */
-    .agent-stream {
-        background: #1f2937;
-        color: #e5e7eb;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        font-family: 'Consolas', 'Monaco', monospace;
-        font-size: 0.875rem;
-        line-height: 1.5;
-        max-height: 300px;
-        overflow-y: auto;
-    }
-    .agent-stream .thinking {
-        color: #60a5fa;
-    }
-    .agent-stream .success {
-        color: #34d399;
-    }
-    .agent-stream .warning {
-        color: #fbbf24;
-    }
-    .agent-stream .error {
-        color: #f87171;
-    }
-    
-    /* Stepper */
-    .stepper {
-        display: flex;
-        justify-content: space-between;
-        margin: 1rem 0;
-    }
-    .stepper-step {
-        flex: 1;
-        text-align: center;
-        position: relative;
-    }
-    .stepper-step::after {
-        content: '';
-        position: absolute;
-        top: 15px;
-        left: 50%;
-        width: 100%;
-        height: 2px;
-        background: #e5e7eb;
-    }
-    .stepper-step:last-child::after {
-        display: none;
-    }
-    .stepper-icon {
-        width: 30px;
-        height: 30px;
-        border-radius: 50%;
-        background: #e5e7eb;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 0.875rem;
-        position: relative;
-        z-index: 1;
-    }
-    .stepper-icon.active {
-        background: #3b82f6;
-        color: white;
-    }
-    .stepper-icon.complete {
-        background: #10b981;
-        color: white;
-    }
-    .stepper-label {
-        font-size: 0.75rem;
-        color: #6b7280;
-        margin-top: 0.25rem;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Load external CSS
+css_path = Path(__file__).parent / "styles" / "custom.css"
+if css_path.exists():
+    with open(css_path, "r") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+else:
+    # No fallback needed - external CSS file contains all styles
+    pass
+
 
 # Setup logger
 logger = setup_logger(__name__, level=config.log_level, component="UI")
 
 
-# ============================================================================
-# SESSION STATE
-# ============================================================================
 
-def init_session_state():
-    """Initialize Streamlit session state."""
-    if "initialized" not in st.session_state:
-        st.session_state.initialized = True
-        st.session_state.inspection_results = None
-        st.session_state.chat_session_id = str(uuid.uuid4())
-        st.session_state.chat_history = []
-        st.session_state.processing = False
-        st.session_state.current_image_path = None
-        st.session_state.show_analytics = False
-        st.session_state.pending_review = None  # For human-in-loop
-        st.session_state.pending_thread_id = None
-        
-        logger.info(f"Session initialized: {st.session_state.chat_session_id}")
+# ============================================================================
+# SESSION STATE - Using imported session_manager module
+# ============================================================================
+# init_session_state is imported from app.services.session_manager
 
 
 # ============================================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS - Using imported components
 # ============================================================================
+# save_uploaded_file is imported from app.services.file_handler
+# display_* functions are imported from app.components.*
 
-def save_uploaded_file(uploaded_file) -> Optional[Path]:
-    """Save uploaded file to disk with validation."""
-    try:
-        # Validate file size
-        file_size_mb = uploaded_file.size / (1024 * 1024)
-        if file_size_mb > config.max_file_size_mb:
-            st.error(
-                f"❌ File too large: {file_size_mb:.1f}MB "
-                f"(maximum: {config.max_file_size_mb}MB)"
-            )
-            return None
-        
-        # Validate extension
-        file_ext = Path(uploaded_file.name).suffix[1:].lower()
-        if file_ext not in config.allowed_extensions_list:
-            st.error(
-                f"❌ Invalid file type: .{file_ext} "
-                f"(allowed: {', '.join(config.allowed_extensions_list)})"
-            )
-            return None
-        
-        # Save file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{uploaded_file.name}"
-        file_path = UPLOAD_DIR / filename
-        
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
-        logger.info(f"File uploaded: {filename} ({file_size_mb:.2f}MB)")
-        
-        return file_path
-    
-    except Exception as e:
-        logger.error(f"File upload failed: {e}")
-        st.error(f"❌ Failed to upload file: {e}")
-        return None
-
-
-def display_verdict_banner(verdict: str, defect_count: int = 0, gate_results: list = None):
-    """Display styled verdict banner with enhanced all-clear for safe images."""
-    if verdict == "SAFE" and defect_count == 0:
-        # Show ALL CLEAR banner for no defects
-        st.markdown('''
-        <div class="all-clear-banner">
-            <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">✅ ✅ ✅</div>
-            <div style="font-size: 1.75rem; font-weight: bold;">ALL CLEAR</div>
-            <div style="font-size: 1rem; margin-top: 0.5rem; opacity: 0.9;">
-                No defects detected by either agent
-            </div>
-            <div style="font-size: 0.875rem; margin-top: 0.75rem;">
-                Inspector: ✅ No issues &nbsp;|&nbsp; Auditor: ✅ Confirmed
-            </div>
-        </div>
-        ''', unsafe_allow_html=True)
-    elif verdict == "SAFE":
-        st.markdown(
-            '<div class="verdict-safe">✅ SAFE - Cosmetic Issues Only (No Safety Impact)</div>',
-            unsafe_allow_html=True
-        )
-    elif verdict == "UNSAFE":
-        st.markdown(
-            '<div class="verdict-unsafe">🚫 UNSAFE - Defects Detected Requiring Attention</div>',
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            '<div class="verdict-review">⚠️ REQUIRES HUMAN REVIEW - Verification Needed</div>',
-            unsafe_allow_html=True
-        )
-
-
-def display_confidence_bar(label: str, confidence: str, numeric_value: float = None):
-    """Display a confidence progress bar with percentage."""
-    # Convert string confidence to numeric
-    if numeric_value is None:
-        confidence_map = {"high": 0.9, "medium": 0.6, "low": 0.3}
-        numeric_value = confidence_map.get(confidence.lower() if confidence else "low", 0.5)
-    
-    percentage = int(numeric_value * 100)
-    
-    # Determine color class
-    if percentage >= 80:
-        color_class = "confidence-high"
-    elif percentage >= 50:
-        color_class = "confidence-medium"
-    else:
-        color_class = "confidence-low"
-    
-    st.markdown(f"""
-    <div style="margin-bottom: 0.75rem;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
-            <span style="font-weight: 500;">{label}</span>
-            <span style="font-weight: bold;">{percentage}%</span>
-        </div>
-        <div class="confidence-bar-container">
-            <div class="confidence-bar {color_class}" style="width: {percentage}%;">
-                {confidence.title() if isinstance(confidence, str) else ''}
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-def display_all_gate_results(gate_results: list):
-    """Display all safety gate evaluation results."""
-    if not gate_results:
-        return
-    
-    st.subheader("🔒 Safety Gate Evaluation")
-    
-    for gate in gate_results:
-        passed = gate.get("passed", True)
-        gate_name = gate.get("display_name", gate.get("gate_id", "Unknown Gate"))
-        message = gate.get("message", "")
-        
-        emoji = "✅" if passed else "❌"
-        badge_class = "gate-passed" if passed else "gate-failed"
-        status_text = "PASSED" if passed else "FAILED"
-        
-        st.markdown(f"""
-        <div style="display: flex; align-items: center; margin-bottom: 0.5rem; padding: 0.5rem; background: #f8fafc; border-radius: 0.5rem;">
-            <span style="font-size: 1.25rem; margin-right: 0.75rem;">{emoji}</span>
-            <div style="flex: 1;">
-                <span style="font-weight: 600;">{gate_name}</span>
-                <span style="color: #6b7280; margin-left: 0.5rem; font-size: 0.875rem;">{message}</span>
-            </div>
-            <span class="{badge_class}">{status_text}</span>
-        </div>
-        """, unsafe_allow_html=True)
+# Function aliases for backward compatibility with rest of codebase
+# These redirect to the new modular components:
+display_verdict_banner = render_verdict_banner
+display_confidence_bar = render_confidence_bar  
+display_all_gate_results = render_gate_results
+display_decision_support = render_decision_support
+# Note: chat_widget is imported directly and used
 
 
 def display_streaming_progress(current_step: int, total_steps: int = 5, step_names: list = None):
@@ -1205,7 +850,8 @@ def main():
             st.markdown(f'<span class="status-online">● Database</span> Connected', unsafe_allow_html=True)
         
         # Session info
-        st.caption(f"Session: {st.session_state.chat_session_id[:8]}")
+        session_id = st.session_state.get("session_id") or st.session_state.get("chat_session_id") or "unknown"
+        st.caption(f"Session: {session_id[:8] if session_id else 'unknown'}")
     
     # Main content
     if page == "🏠 Inspection":

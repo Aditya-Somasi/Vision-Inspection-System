@@ -28,13 +28,14 @@ YOUR TASK:
 3. For EACH defect, provide:
    - Type (e.g., crack, rust, corrosion, deformation, tear, discoloration, scratch, chip, pit, wear)
    - Specific location description (e.g., "top-left corner", "center threading area")
-   - **PRECISE bounding box coordinates** (x, y, width, height in PIXELS):
-     * x = distance from LEFT edge of image to LEFT edge of defect
-     * y = distance from TOP edge of image to TOP edge of defect
-     * width = horizontal span of the defect
-     * height = vertical span of the defect
-     * BE PRECISE - box should TIGHTLY enclose ONLY the damaged area, not the whole object
-     * For small defects: use small boxes (even 10x10 pixels for tiny defects)
+   - **PERCENTAGE-BASED bounding box coordinates** (x_percent, y_percent, width_percent, height_percent):
+     * All values are PERCENTAGES (0-100) of image dimensions
+     * x_percent = horizontal position as percentage from LEFT edge (0 = left, 100 = right)
+     * y_percent = vertical position as percentage from TOP edge (0 = top, 100 = bottom)
+     * width_percent = width of defect as percentage of image width
+     * height_percent = height of defect as percentage of image height
+     * Example: Defect in upper-left quadrant covering 10% of width: {{"x": 15, "y": 10, "width": 10, "height": 8}}
+     * BE PRECISE - box should TIGHTLY enclose ONLY the damaged area
    - Safety impact: CRITICAL, MODERATE, or COSMETIC
    - Detailed reasoning for why this defect is concerning
    - Confidence level: high, medium, or low
@@ -49,18 +50,19 @@ SMALL DEFECT DETECTION:
 - Look VERY carefully for hairline cracks, microscopic pits, subtle discoloration, small chips
 - Zoom mentally into different regions: corners, edges, center, surfaces
 - Even tiny defects can be critical on safety components
-- If image is high resolution, small defects might only be a few pixels wide - still detect them
+- For tiny defects, use small percentages (e.g., width: 2, height: 2 for a tiny spot)
 
 SAFETY IMPACT GUIDELINES:
 - CRITICAL: Could cause injury, death, system failure, contamination, or immediate hazard
 - MODERATE: Affects function or durability but not immediately dangerous
 - COSMETIC: Visual defect only, no functional or safety impact
 
-BOUNDING BOX PRECISION:
+BOUNDING BOX PRECISION (PERCENTAGE-BASED):
 - The highlighted area MUST precisely match the defect location
-- For a 5mm crack: if image is 1000px wide and crack is at center spanning 50px, use x=475, width=50
-- For tiny defects: minimum box size 10x10 pixels
-- DO NOT over-highlight - box should NOT include undamaged areas
+- For a defect in the CENTER of image: x=45, y=45, width=10, height=10
+- For a defect in TOP-LEFT corner: x=5, y=5, width=15, height=10
+- For a defect in BOTTOM-RIGHT area: x=70, y=75, width=20, height=15
+- DO NOT over-highlight - box percentages should NOT include undamaged areas
 
 IMPORTANT RULES:
 - Be thorough - missing a critical defect could be dangerous
@@ -76,7 +78,7 @@ Return ONLY valid JSON in this exact format (no other text):
     {{
       "type": "hairline_crack",
       "location": "threading area, upper-right quadrant, 3mm from edge",
-      "bbox": {{"x": 450, "y": 120, "width": 35, "height": 8}},
+      "bbox": {{"x": 65, "y": 15, "width": 10, "height": 3}},
       "safety_impact": "CRITICAL",
       "reasoning": "Hairline cracks in threaded fasteners propagate under cyclic loading",
       "confidence": "high",
@@ -117,13 +119,13 @@ SMALL DEFECT DETECTION:
 - Scan the ENTIRE image systematically: corners, edges, surfaces, shadows
 - Look for: hairline cracks, tiny pits, microscopic corrosion, subtle wear patterns
 - Small defects are OFTEN missed - be extra vigilant
-- Use small, tight bounding boxes for small defects (even 10x10 pixels)
+- Use small percentage values for tiny defects (e.g., width: 2, height: 2)
 
-BOUNDING BOX PRECISION:
-- Your bbox should EXACTLY match the defect location
-- x = pixels from LEFT edge to defect LEFT edge
-- y = pixels from TOP edge to defect TOP edge
-- width/height = exact span of the defect in pixels
+BOUNDING BOX PRECISION (PERCENTAGE-BASED):
+- Your bbox should EXACTLY match the defect location using PERCENTAGES (0-100)
+- x = percentage from LEFT edge (0=left, 100=right)
+- y = percentage from TOP edge (0=top, 100=bottom)
+- width/height = percentage of image dimensions
 - DO NOT over-highlight - box should TIGHTLY enclose ONLY the damage
 
 AUDITOR GUIDELINES:

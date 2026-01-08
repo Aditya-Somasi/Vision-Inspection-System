@@ -299,11 +299,11 @@ Keep each statement under 15 words. Be specific and actionable."""
     ) -> dict:
         """
         Generate decision support metrics (Cost, Time, Recommendation).
-        Returns a dict with cost estimates in INR.
+        Returns a dict with cost estimates in USD.
         """
         if not defects:
             return {
-                "repair_cost": "₹0",
+                "repair_cost": "$0",
                 "replace_cost": "N/A", 
                 "repair_time": "N/A",
                 "replace_time": "N/A",
@@ -312,28 +312,28 @@ Keep each statement under 15 words. Be specific and actionable."""
             }
             
         prompt = f"""
-        You are a repair cost estimator. Based on the following defects, estimate repair vs replace costs in INDIAN RUPEES (₹).
+        You are a repair cost estimator. Based on the following defects, estimate repair vs replace costs in US DOLLARS ($).
         
         DEFECTS:
         {json.dumps([{
-            'type': d.get('type', 'unknown'),
-            'severity': d.get('safety_impact', 'MODERATE'),
-            'location': d.get('location', 'unspecified')
+            'type': d.get('type', 'unknown') if isinstance(d, dict) else getattr(d, 'type', 'unknown'),
+            'severity': d.get('safety_impact', 'MODERATE') if isinstance(d, dict) else getattr(d, 'safety_impact', 'MODERATE'),
+            'location': d.get('location', 'unspecified') if isinstance(d, dict) else getattr(d, 'location', 'unspecified')
         } for d in defects], indent=2)}
         
         VERDICT: {verdict}
         
         Provide output as a strictly valid JSON object with these keys:
-        - repair_cost_min: number (INR)
-        - repair_cost_max: number (INR)
-        - replace_cost_estimate: number (INR)
+        - repair_cost_min: number (USD)
+        - repair_cost_max: number (USD)
+        - replace_cost_estimate: number (USD)
         - repair_time_estimate: string (e.g. "2-4 hours")
         - replace_lead_time: string (e.g. "3-5 days")
         - recommendation: string ("REPAIR" or "REPLACE")
         - reasoning: string (brief reason)
         
-        Make realistic estimates assuming standard industrial electronics/components.
-        Use realistic INR market rates (e.g. simple soldering ₹500-1500, screen replacement ₹5000-15000).
+        Make realistic estimates assuming standard electronics/components.
+        Use realistic USD market rates (e.g. simple soldering $20-50, screen replacement $100-300, laptop replacement $500-1500).
         Output ONLY the JSON.
         """
         
@@ -350,8 +350,8 @@ Keep each statement under 15 words. Be specific and actionable."""
             
             # Format currency strings
             return {
-                "repair_cost": f"₹{data.get('repair_cost_min', 0):,} - ₹{data.get('repair_cost_max', 0):,}",
-                "replace_cost": f"₹{data.get('replace_cost_estimate', 0):,}",
+                "repair_cost": f"${data.get('repair_cost_min', 0):,} - ${data.get('repair_cost_max', 0):,}",
+                "replace_cost": f"${data.get('replace_cost_estimate', 0):,}",
                 "repair_time": data.get("repair_time_estimate", "Unknown"),
                 "replace_time": data.get("replace_lead_time", "Unknown"),
                 "recommendation": data.get("recommendation", "Review"),
