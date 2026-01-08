@@ -56,14 +56,14 @@ class Config(BaseSettings):
         alias="VLM_INSPECTOR_PROVIDER"
     )
     
-    # Auditor model - Llama 4 Maverick on Groq for TRUE independent verification
-    # DIFFERENT model architecture (MoE) and provider for real consensus
+    # Auditor model - Qwen on HuggingFace (same as Inspector for now)
+    # Using same VLM as Inspector to avoid rate limits
     vlm_auditor_model: str = Field(
-        default="meta-llama/llama-4-maverick-17b-128e-instruct",
+        default="Qwen/Qwen2.5-VL-7B-Instruct",
         alias="VLM_AUDITOR_MODEL"
     )
     vlm_auditor_temperature: float = Field(
-        default=0.1,
+        default=0.2,
         alias="VLM_AUDITOR_TEMPERATURE"
     )
     vlm_auditor_max_tokens: int = Field(
@@ -71,7 +71,7 @@ class Config(BaseSettings):
         alias="VLM_AUDITOR_MAX_TOKENS"
     )
     vlm_auditor_provider: str = Field(
-        default="groq",
+        default="huggingface",
         alias="VLM_AUDITOR_PROVIDER"
     )
     

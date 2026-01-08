@@ -10,16 +10,25 @@ from typing import Any, Dict, Optional
 
 
 def init_session_state():
-    """Initialize all required session state variables."""
+    """Initialize all required session state variables with multi-image support."""
     defaults = {
         # Core state
         "session_id": str(uuid.uuid4()),
         "initialized": True,
-        "inspection_results": None,
+        "inspection_results": None,  # Legacy: single-image result (deprecated)
         "pending_review": None,
         "pending_thread_id": None,
-        "current_image_path": None,
+        "current_image_path": None,  # Legacy: single-image path (deprecated)
         "processing": False,  # For tracking if inspection is in progress
+        
+        # Multi-image session management (NEW)
+        "current_session_id": None,  # UUID for current inspection session
+        "session_start_time": None,
+        "session_status": "idle",  # idle | uploading | processing | complete | error
+        "uploaded_images": [],  # List of uploaded image metadata
+        "session_metadata": {},  # criticality, domain, user_notes, batch_name
+        "image_results": {},  # Per-image results indexed by image_id
+        "session_results": {},  # Aggregated session results
         
         # Chat state
         "chat_messages": [],
@@ -28,7 +37,9 @@ def init_session_state():
         
         # UI state
         "sidebar_expanded": True,
-        "active_tab": "inspection",
+        "active_tab": "upload",  # upload | inspect | results | chat
+        "selected_image_id": None,  # For detailed view
+        "expanded_sections": set(),  # Track which expanders are open
         "theme": "light",
         "show_analytics": False,
         

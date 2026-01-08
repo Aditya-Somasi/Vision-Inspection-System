@@ -5,7 +5,7 @@ Handles image loading, preprocessing, resizing, and validation.
 
 import io
 from pathlib import Path
-from typing import Tuple, Optional, BinaryIO
+from typing import Tuple, Optional, BinaryIO, List, Dict, Any
 
 from PIL import Image
 import cv2
@@ -148,7 +148,9 @@ def validate_image(
 def draw_bounding_boxes(
     image_path: Path,
     boxes: list,
-    output_path: Path
+    output_path: Path,
+    confidence_threshold: str = "low",
+    criticality: str = "medium"
 ) -> Path:
     """
     Draw PRECISE bounding boxes with labels on image.
@@ -156,8 +158,10 @@ def draw_bounding_boxes(
     
     Args:
         image_path: Path to original image
-        boxes: List of dicts with x, y, width, height, label, color
+        boxes: List of dicts with x, y, width, height, label, color, confidence (optional)
         output_path: Path to save annotated image
+        confidence_threshold: Minimum confidence level to highlight ("low", "medium", "high")
+        criticality: Criticality level ("low", "medium", "high") - affects filtering
         
     Returns:
         Path to annotated image
@@ -169,91 +173,127 @@ def draw_bounding_boxes(
     
     img_height, img_width = img.shape[:2]
     
-    # VLM now returns PERCENTAGE-BASED coordinates (0-100)
-    # We convert percentages to actual pixel positions
-    # This is more reliable than VLMs returning absolute pixels
+    # Confidence filtering: Skip low-confidence defects unless criticality is high
+    confidence_levels = {"low": 1, "medium": 2, "high": 3}
+    threshold_level = confidence_levels.get(confidence_threshold, 1)
     
-    for i, box in enumerate(boxes):
-        # Get percentage coordinates from model (0-100 range)
+    filtered_boxes = []
+    for box in boxes:
+        box_confidence = box.get("confidence", "medium")
+        box_level = confidence_levels.get(box_confidence, 2)
+        
+        # Include if confidence meets threshold OR if criticality is high (conservative)
+        if box_level >= threshold_level or criticality == "high":
+            filtered_boxes.append(box)
+        else:
+            logger.debug(f"Skipping low-confidence defect: {box.get('type', 'unknown')} (confidence={box_confidence})")
+    
+    # All coordinates are now PERCENTAGES (0-100) per model output normalization
+    for i, box in enumerate(filtered_boxes):
+        # Get percentage coordinates (0-100 range)
         raw_x = box.get("x", 0)
         raw_y = box.get("y", 0)
         raw_w = box.get("width", 10)
         raw_h = box.get("height", 10)
         
-        # Detect if values are percentages (0-100) or already pixels (>100)
-        # If all values are <=100, treat as percentages
-        # If any value >100, treat as legacy pixel format and scale
-        is_percentage = all(v <= 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
+        # Validate percentage range before conversion
+        if not (0 <= raw_x <= 100 and 0 <= raw_y <= 100 and 
+                0 < raw_w <= 100 and 0 < raw_h <= 100):
+            logger.warning(f"Invalid bbox coordinates (out of 0-100 range): {box}")
+            continue
         
-        if is_percentage:
-            # Convert percentage to pixels
-            x = int((raw_x / 100.0) * img_width)
-            y = int((raw_y / 100.0) * img_height)
-            w = int((raw_w / 100.0) * img_width)
-            h = int((raw_h / 100.0) * img_height)
-        else:
-            # Legacy format: scale from model image size to original
-            MODEL_MAX_SIZE = 1024
-            original_max_dim = max(img_width, img_height)
-            scale_factor = original_max_dim / MODEL_MAX_SIZE if original_max_dim > MODEL_MAX_SIZE else 1.0
-            x = max(0, int(raw_x * scale_factor))
-            y = max(0, int(raw_y * scale_factor))
-            w = int(raw_w * scale_factor)
-            h = int(raw_h * scale_factor)
+        # Validate bbox doesn't exceed image bounds
+        if raw_x + raw_w > 100 or raw_y + raw_h > 100:
+            logger.warning(f"Bbox exceeds image bounds: x+width={raw_x+raw_w}, y+height={raw_y+raw_h}")
+            continue
         
-        # Ensure minimum size for visibility
-        w = max(w, 20)
-        h = max(h, 20)
+        # Validate reasonableness (area between 0.1% and 50% of image)
+        area_percent = (raw_w * raw_h) / 100.0
+        if area_percent < 0.1:
+            logger.warning(f"Bbox too small (area={area_percent:.2f}%) - skipping: {box}")
+            continue
+        if area_percent > 50.0:
+            logger.warning(f"Bbox too large (area={area_percent:.2f}%) - likely error, skipping: {box}")
+            continue
+        
+        # Convert percentage to pixels
+        x = int((raw_x / 100.0) * img_width)
+        y = int((raw_y / 100.0) * img_height)
+        w = int((raw_w / 100.0) * img_width)
+        h = int((raw_h / 100.0) * img_height)
+        
+        # Ensure minimum size for marker visibility (not box size)
+        min_marker_size = max(20, min(img_width, img_height) // 20)
         
         # Clamp to image bounds
-        x = min(max(0, x), img_width - 10)
-        y = min(max(0, y), img_height - 10)
+        x = min(max(0, x), img_width - 1)
+        y = min(max(0, y), img_height - 1)
         w = min(w, img_width - x)
         h = min(h, img_height - y)
         
+        # Skip if box is invalid after clamping
+        if w <= 0 or h <= 0:
+            logger.warning(f"Bbox invalid after clamping, skipping: {box}")
+            continue
+        
         # Extract label specific info
-        # Extract just the number from label "#1" -> "1"
         label_full = box.get("label", f"#{i+1}")
         try:
-            # Try to extract number if format is "#N"
             label_text = label_full.replace("#", "")
         except:
             label_text = str(i+1)
             
         severity = box.get("severity", "MODERATE")
+        box_confidence = box.get("confidence", "medium")
         
-        # PROFESSIONAL STYLE:
-        # 1. Thin red bounding box (or based on severity, but user asked for red style)
-        # 2. White circular marker with red border
-        # 3. Black number inside
-        
-        # Box color - User requested Red thin line. 
-        # We'll use Red for critical/moderate to keep it standard, maybe Orange for cosmetic?
-        # Actually standardizing on Red/Orange makes it look cleaner like the reference
-        box_color = (0, 0, 255) # Red for high visibility standard
-        
+        # Box color based on severity
+        box_color = (0, 0, 255)  # Red for CRITICAL/MODERATE
         if severity == "COSMETIC":
-            box_color = (0, 200, 255) # Yellow-ish for cosmetic
-            
-        thickness = 2
+            box_color = (0, 200, 255)  # Yellow-ish for cosmetic
         
-        # Draw bounding box
-        cv2.rectangle(img, (x, y), (x + w, y + h), box_color, thickness)
+        # Line style based on confidence
+        thickness = 2
+        line_type = cv2.LINE_AA
+        use_dashed = (box_confidence == "low")
+        
+        # Draw bounding box (dashed for low confidence, solid for medium/high)
+        if use_dashed:
+            # Draw dashed rectangle using line segments
+            dash_length = 10
+            gap_length = 5
+            # Top edge
+            for px in range(x, x + w, dash_length + gap_length):
+                end_x = min(px + dash_length, x + w)
+                if end_x > px:
+                    cv2.line(img, (px, y), (end_x, y), box_color, thickness, line_type)
+            # Bottom edge
+            for px in range(x, x + w, dash_length + gap_length):
+                end_x = min(px + dash_length, x + w)
+                if end_x > px:
+                    cv2.line(img, (px, y + h), (end_x, y + h), box_color, thickness, line_type)
+            # Left edge
+            for py in range(y, y + h, dash_length + gap_length):
+                end_y = min(py + dash_length, y + h)
+                if end_y > py:
+                    cv2.line(img, (x, py), (x, end_y), box_color, thickness, line_type)
+            # Right edge
+            for py in range(y, y + h, dash_length + gap_length):
+                end_y = min(py + dash_length, y + h)
+                if end_y > py:
+                    cv2.line(img, (x + w, py), (x + w, end_y), box_color, thickness, line_type)
+        else:
+            # Solid rectangle for medium/high confidence
+            cv2.rectangle(img, (x, y), (x + w, y + h), box_color, thickness, line_type)
         
         # Draw Circular Marker (#1, #2)
-        # Position: Top-left corner of the box usually, unless box is tiny then center
-        marker_radius = int(max(img_width, img_height) * 0.04) # Dynamic size 4% of image
-        marker_radius = max(35, min(marker_radius, 80)) # Clamp size (min 35px, max 80px)
+        # Marker size: dynamic based on image size
+        marker_radius = int(max(img_width, img_height) * 0.04)
+        marker_radius = max(25, min(marker_radius, 60))  # Clamp (min 25px, max 60px)
         
-        # Determine marker position
-        if w < 50 or h < 50:
-             # Tiny box -> Center marker
-             marker_cx = x + w // 2
-             marker_cy = y + h // 2
-        else:
-             # Normal box -> Top left corner, slightly offset inside
-             marker_cx = x + marker_radius + 5
-             marker_cy = y + marker_radius + 5
+        # Marker position: Top-left corner of box (offset inside for visibility)
+        # Ensure marker stays within image bounds
+        marker_cx = max(marker_radius + 5, min(x + marker_radius + 5, img_width - marker_radius - 5))
+        marker_cy = max(marker_radius + 5, min(y + marker_radius + 5, img_height - marker_radius - 5))
              
         # Draw white filled circle
         cv2.circle(img, (marker_cx, marker_cy), marker_radius, (255, 255, 255), -1)
@@ -281,16 +321,22 @@ def create_heatmap_overlay(
     image_path: Path,
     defects: list,
     output_path: Path,
-    alpha: float = 0.4
+    alpha: float = 0.4,
+    actual_model_size: Optional[int] = None,
+    confidence_threshold: str = "low",
+    criticality: str = "medium"
 ) -> Path:
     """
     Create semi-transparent heatmap overlay on defect regions.
     
     Args:
         image_path: Path to original image
-        defects: List of defect dicts with bbox and severity
+        defects: List of defect dicts with bbox, severity, and confidence
         output_path: Path to save overlay image
         alpha: Transparency level (0-1)
+        actual_model_size: Actual max dimension used by model (from config, default 2048)
+        confidence_threshold: Minimum confidence to include ("low", "medium", "high")
+        criticality: Criticality level for filtering
         
     Returns:
         Path to overlay image
@@ -304,36 +350,48 @@ def create_heatmap_overlay(
     
     height, width = img.shape[:2]
     
-    # VLM models receive images resized to max 1024px
-    # Scale coordinates from model space to original image space
-    MODEL_MAX_SIZE = 1024
-    original_max_dim = max(width, height)
-    if original_max_dim > MODEL_MAX_SIZE:
-        scale_factor = original_max_dim / MODEL_MAX_SIZE
-    else:
-        scale_factor = 1.0
+    # Confidence filtering: Skip low-confidence defects unless criticality is high
+    confidence_levels = {"low": 1, "medium": 2, "high": 3}
+    threshold_level = confidence_levels.get(confidence_threshold, 1)
+    
+    filtered_defects = []
+    for defect in defects:
+        defect_confidence = defect.get("confidence", "medium")
+        defect_level = confidence_levels.get(defect_confidence, 2)
+        
+        if defect_level >= threshold_level or criticality == "high":
+            filtered_defects.append(defect)
+        else:
+            logger.debug(f"Skipping low-confidence defect in heatmap: {defect.get('type', 'unknown')}")
+    
+    # All coordinates are now PERCENTAGES (0-100) - no scaling needed
+    # Note: actual_model_size parameter kept for backward compatibility but not used
         
     # Initialize blank mask for heatmap (float 0-1)
-    # We will accumulate "heat" on this mask
     heat_mask = np.zeros((height, width), dtype=np.float32)
     
     has_defects = False
     
-    for defect in defects:
+    for defect in filtered_defects:
         has_defects = True
         bbox = defect.get("bbox", {})
         severity = defect.get("safety_impact", "MODERATE")
+        defect_confidence = defect.get("confidence", "medium")
         
-        # Determine heat intensity based on severity (using user's weight mapping)
+        # Determine heat intensity based on severity and confidence
         severity_weight = {
             'CRITICAL': 1.0,
             'MODERATE': 0.6,
             'COSMETIC': 0.3,
             'MINOR': 0.3
         }
-        intensity = severity_weight.get(severity, 0.5)
+        base_intensity = severity_weight.get(severity, 0.5)
         
-        # Check for widespread defects (no bbox)
+        # Multiply by confidence factor (high=1.0, medium=0.7, low=0.4)
+        confidence_factor = {"high": 1.0, "medium": 0.7, "low": 0.4}.get(defect_confidence, 0.5)
+        intensity = base_intensity * confidence_factor
+        
+        # Check for widespread defects (no bbox AND explicit widespread keywords)
         widespread_keywords = ["entire surface", "everywhere", "whole component", "complete surface"]
         location_lower = defect.get("location", "").lower()
         
@@ -343,7 +401,8 @@ def create_heatmap_overlay(
                          bbox.get("width", 0) > 0 and
                          bbox.get("height", 0) > 0)
         
-        is_widespread = (not has_valid_bbox and 
+        # Only treat as widespread if bbox is explicitly None AND keywords present
+        is_widespread = (bbox is None and 
                         any(kw in location_lower for kw in widespread_keywords))
         
         if is_widespread:
@@ -351,7 +410,6 @@ def create_heatmap_overlay(
             center_x, center_y = width // 2, height // 2
             radius = max(width, height) // 2
             
-            # Create Gaussian blob for widespread defect
             y_coords, x_coords = np.ogrid[:height, :width]
             dist_sq = (x_coords - center_x)**2 + (y_coords - center_y)**2
             gaussian = intensity * np.exp(-dist_sq / (2 * (radius * 0.7)**2))
@@ -359,52 +417,61 @@ def create_heatmap_overlay(
             continue
             
         if has_valid_bbox:
-            # Extract coordinates (now percentage-based 0-100)
+            # Extract coordinates (all are percentages 0-100)
             raw_x = bbox.get("x", 0)
             raw_y = bbox.get("y", 0)
             raw_w = bbox.get("width", 10)
             raw_h = bbox.get("height", 10)
             
-            # Detect if values are percentages (0-100) or legacy pixels (>100)
-            is_percentage = all(v <= 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
+            # Validate percentage range
+            if not (0 <= raw_x <= 100 and 0 <= raw_y <= 100 and 
+                    0 < raw_w <= 100 and 0 < raw_h <= 100):
+                logger.warning(f"Invalid bbox in heatmap (out of 0-100 range): {bbox}")
+                continue
             
-            if is_percentage:
-                # Convert percentage to pixels
-                x = int((raw_x / 100.0) * width)
-                y = int((raw_y / 100.0) * height)
-                w = int((raw_w / 100.0) * width)
-                h = int((raw_h / 100.0) * height)
-            else:
-                # Legacy format: scale from model image size
-                x = int(raw_x * scale_factor)
-                y = int(raw_y * scale_factor)
-                w = int(raw_w * scale_factor)
-                h = int(raw_h * scale_factor)
+            if raw_x + raw_w > 100 or raw_y + raw_h > 100:
+                logger.warning(f"Bbox exceeds bounds in heatmap: {bbox}")
+                continue
             
-            # Ensure minimum size for visibility
-            w = max(w, 20)
-            h = max(h, 20)
+            # Validate reasonableness
+            area_percent = (raw_w * raw_h) / 100.0
+            if area_percent < 0.1 or area_percent > 50.0:
+                logger.warning(f"Bbox unreasonable size in heatmap (area={area_percent:.2f}%), skipping: {bbox}")
+                continue
+            
+            # Convert percentage to pixels
+            x = int((raw_x / 100.0) * width)
+            y = int((raw_y / 100.0) * height)
+            w = int((raw_w / 100.0) * width)
+            h = int((raw_h / 100.0) * height)
+            
+            # Clamp to image bounds
+            x = max(0, min(x, width - 1))
+            y = max(0, min(y, height - 1))
+            w = min(w, width - x)
+            h = min(h, height - y)
+            
+            if w <= 0 or h <= 0:
+                continue
             
             # Calculate center of defect
             center_x = x + w // 2
             center_y = y + h // 2
             
-            # Calculate radius for Gaussian blob (like user's code)
+            # Calculate radius for Gaussian blob
             radius = max(w, h)
             
-            # TRUE GAUSSIAN BLOB CALCULATION (vectorized for speed)
-            # Create coordinate grids for the entire image
+            # Create coordinate grids
             y_coords, x_coords = np.ogrid[:height, :width]
             
             # Calculate squared distance from center
             dist_sq = (x_coords - center_x)**2 + (y_coords - center_y)**2
             
-            # Calculate Gaussian intensity based on distance
-            # Using radius * 1.5 as sigma for smooth falloff
+            # Calculate Gaussian intensity
             sigma = radius * 0.8
             gaussian = intensity * np.exp(-dist_sq / (2 * sigma**2))
             
-            # Only apply within 2x radius for efficiency
+            # Only apply within 2.5x radius for efficiency
             mask = dist_sq < (radius * 2.5)**2
             heat_mask = np.where(mask, np.maximum(heat_mask, gaussian.astype(np.float32)), heat_mask)
 

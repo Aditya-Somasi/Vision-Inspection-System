@@ -18,7 +18,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.config import config, UPLOAD_DIR, REPORT_DIR
-from src.orchestration import run_inspection
+from src.orchestration import run_inspection, run_multi_image_inspection
+from src.orchestration.session_aggregation import aggregate_session_results
 from src.database import InspectionRepository
 from src.chat_memory import get_memory_manager, get_session_history
 from utils.logger import setup_logger
@@ -34,6 +35,15 @@ from app.components.verdict_display import (
 )
 from app.components.decision_support import render_decision_support
 from app.components.chat_widget import chat_widget, clear_chat
+from app.components.sidebar import render_sidebar
+from app.components.image_upload import (
+    render_multi_image_upload_zone,
+    render_image_preview_gallery,
+    render_batch_config_form,
+    process_uploaded_files
+)
+from app.components.inspection_progress import render_live_inspection_tab
+from app.components.results_view import render_results_review_tab
 from app.services.file_handler import save_uploaded_file, validate_image
 from app.services.session_manager import init_session_state, get_state, set_state
 
@@ -81,183 +91,6 @@ display_decision_support = render_decision_support
 # Note: chat_widget is imported directly and used
 
 
-def display_streaming_progress(current_step: int, total_steps: int = 5, step_names: list = None):
-    """Display real-time streaming progress during inspection."""
-    if step_names is None:
-        step_names = [
-            "Image preprocessing",
-            "Inspector analysis",
-            "Auditor verification",
-            "Consensus analysis",
-            "Safety evaluation"
-        ]
-    
-    progress_html = '<div style="margin: 1rem 0;">'
-    
-    for i, step_name in enumerate(step_names, 1):
-        if i < current_step:
-            icon = "✅"
-            status = "Complete"
-            color = "#10b981"
-        elif i == current_step:
-            icon = "🔄"
-            status = "In Progress..."
-            color = "#3b82f6"
-        else:
-            icon = "⏳"
-            status = "Waiting"
-            color = "#9ca3af"
-        
-        progress_html += f'''
-        <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
-            <span style="font-size: 1.25rem; margin-right: 0.5rem;">{icon}</span>
-            <span style="flex: 1; color: {color}; font-weight: {'600' if i == current_step else '400'};">
-                Step {i}/{total_steps}: {step_name}
-            </span>
-            <span style="color: {color}; font-size: 0.875rem;">[{status}]</span>
-        </div>
-        '''
-    
-    # Progress bar
-    progress_percent = int((current_step - 1) / total_steps * 100)
-    progress_html += f'''
-    <div style="margin-top: 1rem;">
-        <div class="confidence-bar-container">
-            <div class="confidence-bar confidence-high" style="width: {progress_percent}%;">
-                {progress_percent}%
-            </div>
-        </div>
-    </div>
-    '''
-    progress_html += '</div>'
-    
-    return progress_html
-
-
-def display_human_review_form(results: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Display human review form for interrupted inspections.
-    
-    Returns:
-        Dict with decision and notes if submitted, None otherwise
-    """
-    from src.orchestration import resume_inspection
-    
-    st.warning("🔔 **Human Review Required**")
-    st.markdown("The AI agents have flagged this inspection for human verification.")
-    
-    # Show context
-    safety_verdict = results.get("safety_verdict", {})
-    consensus = results.get("consensus", {})
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info(f"**AI Verdict:** {safety_verdict.get('verdict', 'UNKNOWN')}")
-        st.caption(f"Triggered gates: {', '.join(safety_verdict.get('triggered_gates', []))}")
-    with col2:
-        agree_status = "✅ Yes" if consensus.get("models_agree") else "⚠️ No"
-        st.info(f"**Models Agree:** {agree_status}")
-        st.caption(f"Agreement score: {consensus.get('agreement_score', 0):.0%}")
-    
-    st.divider()
-    
-    # Decision form
-    st.subheader("📋 Your Decision")
-    
-    with st.form("human_review_form"):
-        decision = st.radio(
-            "Select your decision:",
-            options=["APPROVE", "REJECT", "MODIFY"],
-            horizontal=True,
-            help="APPROVE: Mark as safe. REJECT: Mark as unsafe. MODIFY: Keep AI verdict but add notes."
-        )
-        
-        notes = st.text_area(
-            "Reviewer Notes (optional):",
-            placeholder="Add any observations or justification for your decision...",
-            height=100
-        )
-        
-        submitted = st.form_submit_button("✅ Submit Decision", type="primary", use_container_width=True)
-        
-        if submitted:
-            thread_id = results.get("_thread_id")
-            if thread_id:
-                try:
-                    with st.spinner("Resuming inspection workflow..."):
-                        final_results = resume_inspection(thread_id, decision, notes)
-                        st.session_state.inspection_results = final_results
-                        st.session_state.pending_review = None
-                        st.session_state.pending_thread_id = None
-                        st.success(f"✅ Decision recorded: {decision}")
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to resume workflow: {e}")
-                    logger.error(f"Resume failed: {e}", exc_info=True)
-            else:
-                # No thread_id means we need to just update the results in session
-                st.session_state.inspection_results["human_decision"] = decision
-                st.session_state.inspection_results["human_notes"] = notes
-                if decision == "APPROVE":
-                    st.session_state.inspection_results["safety_verdict"]["verdict"] = "SAFE"
-                elif decision == "REJECT":
-                    st.session_state.inspection_results["safety_verdict"]["verdict"] = "UNSAFE"
-                st.session_state.pending_review = None
-                st.success(f"✅ Decision recorded: {decision}")
-                st.rerun()
-    
-    return None
-
-
-
-def display_decision_support(results: Dict[str, Any]):
-    """Display Decision Support (Repair vs Replace) section."""
-    if "decision_support" not in results:
-        return
-
-    decision = results.get("decision_support", {})
-    if not decision or decision.get("recommendation", "Review") == "No Action Required":
-        return
-
-    st.divider()
-    st.subheader("💰 Decision Support")
-    
-    # Recommendation Banner
-    rec = decision.get("recommendation", "REVIEW").upper()
-    
-    if rec == "REPLACE":
-        bg_color = "#fee2e2" # Red-100
-        border_color = "#ef4444"
-        icon = "🛑"
-    elif rec == "REPAIR":
-        bg_color = "#fef3c7" # Amber-100
-        border_color = "#f59e0b" 
-        icon = "🔧"
-    else:
-        bg_color = "#e0f2fe" # Blue-100
-        border_color = "#3b82f6"
-        icon = "ℹ️"
-
-    st.markdown(f"""
-    <div style="background-color: {bg_color}; border: 2px solid {border_color}; padding: 1rem; border-radius: 0.5rem; text-align: center; margin-bottom: 1rem;">
-        <h3 style="margin:0; color: #1f2937;">{icon} RECOMMENDATION: {rec}</h3>
-        <p style="margin:0.5rem 0 0 0; color: #4b5563;">{decision.get('reasoning', '')}</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Cost Comparison
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("### 🔧 Repair Option")
-        st.metric("Estimated Cost", decision.get("repair_cost", "N/A"))
-        st.caption(f"Time: {decision.get('repair_time', 'N/A')}")
-        
-    with col2:
-        st.markdown("### 📦 Replace Option")
-        st.metric("Estimated Cost", decision.get("replace_cost", "N/A"))
-        st.caption(f"Lead Time: {decision.get('replace_time', 'N/A')}")
-
 def display_inspection_results(results: Dict[str, Any]):
     """Display inspection results in enhanced UI with confidence bars and gate display."""
     verdict = results.get("safety_verdict", {})
@@ -272,63 +105,22 @@ def display_inspection_results(results: Dict[str, Any]):
     # Verdict banner with defect count for all-clear display
     display_verdict_banner(verdict.get("verdict", "UNKNOWN"), defect_count, gate_results)
     
-    # Confidence Metrics Section
-    st.subheader("📊 Confidence Metrics")
-    
+    # Confidence Metrics Section - Using component
     inspector_result = results.get("inspector_result", {})
     auditor_result = results.get("auditor_result", {})
+    agreement_score = consensus.get("agreement_score", 0.5)
+    processing_time = results.get('processing_time') or 0
     
-    col1, col2 = st.columns(2)
+    render_confidence_metrics(
+        inspector_confidence=inspector_result.get("overall_confidence", "medium"),
+        auditor_confidence=auditor_result.get("overall_confidence", "medium"),
+        agreement_score=agreement_score,
+        processing_time=processing_time
+    )
     
-    with col1:
-        display_confidence_bar(
-            "Inspector Confidence",
-            inspector_result.get("overall_confidence", "medium")
-        )
-        display_confidence_bar(
-            "Auditor Confidence",
-            auditor_result.get("overall_confidence", "medium")
-        )
-    
-    with col2:
-        agreement_score = consensus.get("agreement_score", 0.5)
-        display_confidence_bar(
-            "Model Agreement",
-            "high" if agreement_score >= 0.8 else "medium" if agreement_score >= 0.5 else "low",
-            agreement_score
-        )
-        processing_time = results.get('processing_time') or 0
-        st.markdown(f"""
-        <div style="margin-bottom: 0.75rem;">
-            <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
-                <span style="font-weight: 500;">Processing Time</span>
-                <span style="font-weight: bold;">{processing_time:.2f}s</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Summary metrics row
+    # Summary metrics row - Using component
     st.divider()
-    col1, col2, col3, col4 = st.columns(4)
-    
-    critical_count = sum(
-        1 for d in defects if d.get("safety_impact") == "CRITICAL"
-    )
-    moderate_count = sum(
-        1 for d in defects if d.get("safety_impact") == "MODERATE"
-    )
-    cosmetic_count = sum(
-        1 for d in defects if d.get("safety_impact") == "COSMETIC"
-    )
-    
-    with col1:
-        st.metric("Total Defects", defect_count)
-    with col2:
-        st.metric("🔴 Critical", critical_count)
-    with col3:
-        st.metric("🟡 Moderate", moderate_count)
-    with col4:
-        st.metric("🔵 Cosmetic", cosmetic_count)
+    render_defect_summary(defects)
     
     # Decision Support Section
     display_decision_support(results)
@@ -585,112 +377,6 @@ def display_inspection_results(results: Dict[str, Any]):
 
 
 # ============================================================================
-# CHAT INTERFACE
-# ============================================================================
-
-def chat_interface(results: Dict[str, Any]):
-    """Interactive chat interface for follow-up questions."""
-    st.subheader("💬 Ask Questions About This Inspection")
-    
-    # Get chat history
-    session_id = st.session_state.chat_session_id
-    history = get_session_history(session_id)
-    
-    # Display chat history
-    for msg in history.messages:
-        role = "user" if msg.type == "human" else "assistant"
-        with st.chat_message(role):
-            st.write(msg.content)
-    
-    # Chat input
-    if prompt := st.chat_input("Ask a question about the inspection results..."):
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
-        
-        # Add to history
-        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-        history.add_message(HumanMessage(content=prompt))
-        
-        # Generate response using LLM
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    # Build context from inspection results
-                    verdict = results.get("safety_verdict", {})
-                    consensus = results.get("consensus", {})
-                    defects = consensus.get("combined_defects", [])
-                    inspector = results.get("inspector_result", {})
-                    auditor = results.get("auditor_result", {})
-                    explanation = results.get("explanation", "No explanation available.")
-                    
-                    # Format defects for context
-                    defect_summary = ""
-                    if defects:
-                        for i, d in enumerate(defects, 1):
-                            defect_summary += f"\n{i}. {d.get('type', 'Unknown')} at {d.get('location', 'unknown location')}"
-                            defect_summary += f" - Severity: {d.get('safety_impact', 'UNKNOWN')}"
-                            defect_summary += f" - Reasoning: {d.get('reasoning', 'N/A')}"
-                    else:
-                        defect_summary = "No defects were found."
-                    
-                    # Build system context
-                    system_context = f"""You are a helpful assistant for a vision inspection system. 
-You have access to the following inspection results and should answer questions based ONLY on this data.
-
-INSPECTION RESULTS:
-- Final Verdict: {verdict.get('verdict', 'UNKNOWN')}
-- Reason: {verdict.get('reason', 'N/A')}
-- Requires Human Review: {verdict.get('requires_human', False)}
-- Object Inspected: {inspector.get('object_identified', 'Unknown')}
-- Overall Condition: {inspector.get('overall_condition', 'Unknown')}
-- Models Agreement: {consensus.get('models_agree', 'Unknown')} (Score: {consensus.get('agreement_score', 0):.1%})
-
-DEFECTS FOUND:
-{defect_summary}
-
-DETAILED ANALYSIS:
-{explanation}
-
-GUIDELINES:
-- Answer questions based on the inspection data above
-- Be specific and reference actual findings
-- If asked about something not in the data, say you don't have that information
-- For safety-critical questions, recommend consulting a qualified professional
-- Be concise but helpful"""
-
-                    # Use Groq for fast responses
-                    from langchain_groq import ChatGroq
-                    
-                    chat_llm = ChatGroq(
-                        api_key=config.groq_api_key,
-                        model_name="llama-3.3-70b-versatile",
-                        temperature=0.3,
-                        max_tokens=500
-                    )
-                    
-                    # Build messages for the LLM
-                    messages = [
-                        SystemMessage(content=system_context),
-                        HumanMessage(content=prompt)
-                    ]
-                    
-                    # Get response from LLM
-                    response = chat_llm.invoke(messages)
-                    response_text = response.content
-                    
-                    st.markdown(response_text)
-                    
-                    # Add to history
-                    history.add_message(AIMessage(content=response_text))
-                
-                except Exception as e:
-                    error_msg = f"I encountered an error: {e}. Please try rephrasing your question."
-                    st.error(error_msg)
-                    logger.error(f"Chat response generation failed: {e}", exc_info=True)
-
-
-# ============================================================================
 # ANALYTICS DASHBOARD
 # ============================================================================
 
@@ -814,207 +500,229 @@ def analytics_dashboard():
 # ============================================================================
 
 def main():
-    """Main application."""
+    """Main application with tabbed layout."""
     init_session_state()
     
-    # Sidebar
+    # Enhanced Sidebar
     with st.sidebar:
-        st.title("🔍 Vision Inspection")
-        st.caption(f"v1.0.0 | {config.environment.upper()}")
-        
-        # Navigation
-        page = st.radio(
-            "Navigation",
-            ["🏠 Inspection", "📊 Analytics", "⚙️ Settings"],
-            label_visibility="collapsed"
-        )
-        
-        st.divider()
-        
-        # System info
-        # System info
-        with st.expander("ℹ️ System Information", expanded=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.markdown('<span class="status-online">● Inspector</span>', unsafe_allow_html=True)
-                st.caption(config.vlm_inspector_model.split('/')[-1][:15] + "...")
-            with col2:
-                st.markdown('<span class="status-online">● Auditor</span>', unsafe_allow_html=True)
-                st.caption(config.vlm_auditor_model.split('/')[-1][:15] + "...")
-            
-            st.divider()
-            
-            langsmith_status = "status-online" if config.langsmith_enabled else "status-offline"
-            langsmith_text = "Tracking Active" if config.langsmith_enabled else "Tracking Inactive"
-            st.markdown(f'<span class="{langsmith_status}">● LangSmith</span> {langsmith_text}', unsafe_allow_html=True)
-            st.markdown(f'<span class="status-online">● Database</span> Connected', unsafe_allow_html=True)
-        
-        # Session info
-        session_id = st.session_state.get("session_id") or st.session_state.get("chat_session_id") or "unknown"
-        st.caption(f"Session: {session_id[:8] if session_id else 'unknown'}")
+        page = render_sidebar()
     
-    # Main content
-    if page == "🏠 Inspection":
-        inspection_page()
+    # Main content area
+    if page == "🏠 Inspection Session":
+        inspection_session_page()
     elif page == "📊 Analytics":
         analytics_dashboard()
-    else:
+    elif page == "📋 Inspection History":
+        inspection_history_page()
+    else:  # Settings
         settings_page()
 
 
-def inspection_page():
-    """Inspection page with enhanced UX."""
+def inspection_session_page():
+    """Inspection session page with tabbed workflow."""
     st.title("🔍 Visual Inspection System")
     st.caption("AI-powered damage detection and safety analysis")
     
-    # File upload section
-    st.subheader("📤 Upload Image")
+    # Create 4 tabs
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📤 Upload & Configure",
+        "🔄 Live Inspection",
+        "📋 Results & Review",
+        "💬 Chat & Analysis"
+    ])
     
-    col1, col2 = st.columns([2, 1])
+    with tab1:
+        render_upload_configure_tab()
     
-    with col1:
-        uploaded_file = st.file_uploader(
-            "Choose an image file",
-            type=config.allowed_extensions_list,
-            help=f"Maximum file size: {config.max_file_size_mb}MB",
-            label_visibility="collapsed"
-        )
+    with tab2:
+        render_live_inspection_tab()
     
-    with col2:
-        criticality = st.selectbox(
-            "🎚️ Criticality Level",
-            options=["low", "medium", "high"],
-            index=1,
-            help="Safety criticality of the component being inspected"
-        )
-        
-        domain = st.text_input(
-            "🏷️ Domain (optional)",
-            placeholder="e.g., mechanical_fasteners",
-            help="Provide context about the inspection domain"
-        )
+    with tab3:
+        render_results_review_tab()
     
-    user_notes = st.text_area(
-        "📝 Additional Notes (optional)",
-        placeholder="Any specific concerns or context about this inspection...",
-        height=80
-    )
+    with tab4:
+        render_chat_analysis_tab()
+
+
+def render_upload_configure_tab():
+    """TAB 1: Upload & Configure - Multi-image upload and session configuration."""
+    st.header("📤 Upload & Configure")
     
-    # Preview uploaded image
-    if uploaded_file:
-        st.image(uploaded_file, caption="📷 Uploaded Image")
+    # Multi-image upload zone
+    uploaded_files = render_multi_image_upload_zone()
     
-    # Analyze button
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        analyze_clicked = st.button(
-            "🔍 Analyze Image",
-            type="primary",
-            disabled=uploaded_file is None or st.session_state.processing,
-            use_container_width=True
-        )
+    # Batch configuration form
+    metadata = render_batch_config_form()
     
-    if analyze_clicked and uploaded_file:
-        # Save file
-        image_path = save_uploaded_file(uploaded_file)
-        
-        if image_path:
-            st.session_state.processing = True
-            st.session_state.current_image_path = str(image_path)
+    # Process uploaded files button
+    if uploaded_files:
+        st.divider()
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("📥 Process Uploaded Files", type="primary", use_container_width=True):
+                process_uploaded_files(uploaded_files, metadata)
+                st.success(f"✅ Processed {len(uploaded_files)} file(s)")
+                st.rerun()
+    
+    # Image preview gallery
+    st.divider()
+    render_image_preview_gallery()
+    
+    # Start Inspection button (if images uploaded)
+    uploaded_images = get_state("uploaded_images", [])
+    if uploaded_images:
+        st.divider()
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            start_inspection = st.button("🚀 Start Inspection", type="primary", use_container_width=True)
             
-            # Progress
-            progress_container = st.empty()
-            
-            with progress_container.container():
-                progress_bar = st.progress(0)
-                status_text = st.status("Initializing inspection...", expanded=True)
+            if start_inspection:
+                # Get session metadata
+                session_metadata = get_state("session_metadata", {})
+                criticality = session_metadata.get("criticality", "medium")
+                domain = session_metadata.get("domain")
+                user_notes = session_metadata.get("user_notes")
+                session_id = get_state("current_session_id")
                 
-                try:
-                    with status_text:
-                        st.write("🔄 Starting inspection workflow...")
-                        progress_bar.progress(10)
-                        time.sleep(0.3)
+                # Update image statuses to processing
+                for img in uploaded_images:
+                    img["status"] = "processing"
+                set_state("uploaded_images", uploaded_images)
+                set_state("session_status", "processing")
+                
+                # Prepare image mappings (path -> image_id from uploaded_images)
+                image_path_to_id = {img["filepath"]: img["image_id"] for img in uploaded_images}
+                image_paths = list(image_path_to_id.keys())
+                
+                # Run multi-image inspection
+                with st.spinner(f"🔄 Processing {len(image_paths)} image(s)..."):
+                    try:
+                        # Update all to processing
+                        for img in uploaded_images:
+                            img["status"] = "processing"
+                        set_state("uploaded_images", uploaded_images)
                         
-                        st.write("🔍 Inspector analyzing image...")
-                        progress_bar.progress(30)
-                        
-                        # Run workflow
-                        results = run_inspection(
-                            image_path=str(image_path),
+                        # Pass image_id_map to preserve original IDs
+                        results = run_multi_image_inspection(
+                            image_paths=image_paths,
                             criticality=criticality,
-                            domain=domain or None,
-                            user_notes=user_notes or None
+                            domain=domain,
+                            user_notes=user_notes,
+                            session_id=session_id,
+                            image_id_map=image_path_to_id
                         )
                         
-                        progress_bar.progress(70)
-                        st.write("📄 Generating report...")
+                        # Map results back to uploaded_images
+                        image_results_dict = results.get("image_results", {})
                         
-                        # Generate PDF report
-                        report_path = generate_report(results)
-                        results["report_path"] = str(report_path)
+                        # Update uploaded_images with results
+                        for img in uploaded_images:
+                            img_id = img["image_id"]
+                            if img_id in image_results_dict:
+                                result = image_results_dict[img_id]
+                                img["inspection_result"] = result
+                                img["status"] = "complete" if result.get("completed") else "failed"
+                                if result.get("error"):
+                                    img["error"] = result.get("error")
                         
-                        # Create a link that opens the PDF - browser will handle viewing
-                        try:
-                            # Resolve to absolute path first to avoid relative/absolute mixing errors
-                            abs_report_path = report_path.resolve()
-                            rel_path = abs_report_path.relative_to(Path.cwd())
-                            pdf_url = f"/{rel_path}"
-                            
-                            st.markdown(
-                                f'<a href="file:///{abs_report_path}" target="_blank" style="text-decoration:none;">'
-                                f'<button style="width:100%; padding:0.5rem 1rem; background-color:#0066cc; color:white; '
-                                f'border:none; border-radius:0.25rem; cursor:pointer; font-size:1rem;">'
-                                f'👁️ Open PDF Location</button></a>',
-                                unsafe_allow_html=True
-                            )
-                        except Exception as e:
-                            logger.warning(f"Could not create relative path for PDF link: {e}")
-                            st.info("Click the path below to open file location")
+                        set_state("uploaded_images", uploaded_images)
+                        set_state("image_results", image_results_dict)
+                        set_state("session_results", results.get("session_results", {}))
                         
-                        progress_bar.progress(100)
-                        st.write("✅ Inspection complete!")
-                        time.sleep(0.5)
-                    
-                    # Clear progress
-                    progress_container.empty()
-                    
-                    # Store results
-                    st.session_state.inspection_results = results
-                    
-                    # Success toast
-                    st.toast("✅ Inspection completed successfully!", icon="✅")
-                    
-                except Exception as e:
-                    logger.error(f"Inspection failed: {e}", exc_info=True)
-                    st.error(f"❌ Inspection failed: {e}")
-                    
-                    if config.verbose_errors:
-                        st.exception(e)
-                
-                finally:
-                    st.session_state.processing = False
+                        set_state("uploaded_images", uploaded_images)
+                        set_state("session_status", "complete")
+                        
+                        st.success(f"✅ Inspection complete! Processed {results['session_results']['completed_images']}/{len(image_paths)} images")
+                        
+                        # Switch to results tab
+                        set_state("active_tab", "results")
+                        st.rerun()
+                        
+                    except Exception as e:
+                        logger.error(f"Multi-image inspection failed: {e}", exc_info=True)
+                        st.error(f"❌ Inspection failed: {e}")
+                        
+                        # Mark all as failed
+                        for img in uploaded_images:
+                            img["status"] = "failed"
+                            img["error"] = str(e)
+                        
+                        set_state("uploaded_images", uploaded_images)
+                        set_state("session_status", "error")
+
+
+def render_chat_analysis_tab():
+    """TAB 4: Chat & Analysis - Context-aware chat widget."""
+    st.header("💬 Chat & Analysis")
     
-    # Display results
-    if st.session_state.inspection_results:
-        results = st.session_state.inspection_results
-        st.divider()
-        st.header("📋 Inspection Results")
+    # Get session results for chat context
+    uploaded_images = get_state("uploaded_images", [])
+    image_results = get_state("image_results", {})
+    session_results = get_state("session_results", {})
+    
+    # Combine results for chat context
+    # For now, use the most recent result or create aggregate context
+    chat_results = None
+    
+    if image_results:
+        # Use the first available result as context
+        first_image_id = list(image_results.keys())[0]
+        chat_results = image_results.get(first_image_id)
+    elif session_results:
+        # Create a synthetic result from session results
+        chat_results = {
+            "safety_verdict": {"verdict": session_results.get("aggregate_verdict", "UNKNOWN")},
+            "consensus": {"combined_defects": []},
+            "session_summary": session_results
+        }
+    
+    # Fallback to legacy inspection_results for backward compatibility
+    if not chat_results:
+        chat_results = get_state("inspection_results")
+    
+    if chat_results and config.enable_chat_memory:
+        chat_widget(chat_results)
+    else:
+        st.info("💬 Start an inspection to enable chat. Results will appear here for Q&A about findings.")
+
+
+def inspection_history_page():
+    """Inspection History page - shows past inspection sessions."""
+    st.header("📋 Inspection History")
+    
+    try:
+        from src.database import InspectionRepository
+        repo = InspectionRepository()
+        recent = repo.list_inspections(limit=20)
         
-        # Show informational banner if human review was recommended (but don't block)
-        if results.get("requires_human_review"):
-            verdict = results.get("safety_verdict", {})
-            st.warning(
-                f"🔔 **Human Review Recommended** - AI Verdict: {verdict.get('verdict', 'UNKNOWN')}\n\n"
-                f"Triggered gates: {', '.join(verdict.get('triggered_gates', ['None']))}"
+        if recent:
+            import pandas as pd
+            
+            df = pd.DataFrame([{
+                "ID": r.inspection_id[:8],
+                "Image": r.image_filename,
+                "Verdict": r.overall_verdict,
+                "Defects": r.defect_count,
+                "Critical": r.critical_defect_count,
+                "Criticality": r.criticality.upper(),
+                "Date": r.created_at.strftime("%Y-%m-%d %H:%M")
+            } for r in recent])
+            
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Verdict": st.column_config.TextColumn("Verdict", help="Safety verdict"),
+                    "Critical": st.column_config.NumberColumn("Critical", help="Critical defects")
+                }
             )
-        
-        # Display full inspection results
-        display_inspection_results(results)
-        
-        # Chat interface
-        if config.enable_chat_memory:
-            st.divider()
-            chat_interface(results)
+        else:
+            st.info("📋 No inspection history yet. Run your first inspection to see data here.")
+    
+    except Exception as e:
+        st.error(f"❌ Failed to load inspection history: {e}")
+        logger.error(f"Inspection history error: {e}")
 
 
 def settings_page():
@@ -1047,7 +755,7 @@ def settings_page():
     st.divider()
     
     if st.button("🗑️ Clear Session Data", type="secondary"):
-        st.session_state.clear()
+        st.session_state.clear()  # Streamlit built-in clear - keep as is
         init_session_state()
         st.success("✅ Session data cleared!")
         st.rerun()

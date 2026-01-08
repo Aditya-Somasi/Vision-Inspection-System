@@ -229,6 +229,39 @@ class VLMInspectorAgent(BaseVLMAgent):
             except json.JSONDecodeError:
                 pass
         
+        # PRE-PARSE: Try to extract analysis_reasoning text before failing
+        # This preserves summary even if JSON is malformed
+        extracted_reasoning = None
+        if "analysis_reasoning" in text:
+            reasoning_pattern = r'"analysis_reasoning"\s*:\s*"([^"]*(?:\\.[^"]*)*)"'
+            match = re.search(reasoning_pattern, text, re.DOTALL)
+            if not match:
+                reasoning_pattern = r'"analysis_reasoning"\s*:\s*"([^"]*)"'
+                match = re.search(reasoning_pattern, text)
+            if match:
+                extracted_reasoning = match.group(1).replace('\\"', '"').replace('\\n', '\n')
+        
+        # If we extracted reasoning, create partial result
+        if extracted_reasoning:
+            self.logger.warning("JSON parsing failed but extracted analysis_reasoning - returning partial result")
+            partial_result = {"analysis_reasoning": extracted_reasoning}
+            
+            # Try to extract other fields with regex
+            obj_match = re.search(r'"object_identified"\s*:\s*"([^"]*)"', text)
+            if obj_match:
+                partial_result["object_identified"] = obj_match.group(1)
+            else:
+                partial_result["object_identified"] = "unknown"
+            
+            # Extract defects count if possible
+            defect_count = text.count('"type"')
+            partial_result["defects"] = []  # Empty list, couldn't parse structure
+            
+            partial_result["overall_condition"] = "uncertain"
+            partial_result["overall_confidence"] = "low"
+            
+            return partial_result
+        
         # Failed to parse - log and raise
         self.logger.error(f"JSON parsing failed. Raw text (first 500 chars): {text[:500]}")
         raise ValueError(f"Failed to parse JSON from model response")
@@ -265,29 +298,75 @@ class VLMInspectorAgent(BaseVLMAgent):
                 defect.setdefault("location", "unspecified")
                 defect.setdefault("safety_impact", "MODERATE")
                 defect.setdefault("reasoning", "No reasoning provided")
-                defect.setdefault("confidence", "medium")
+                defect.setdefault("confidence", "low")  # Conservative: default to low confidence
                 defect.setdefault("recommended_action", "Further inspection recommended")
                 
                 # Validate safety_impact
                 if defect["safety_impact"] not in ["CRITICAL", "MODERATE", "COSMETIC"]:
                     defect["safety_impact"] = "MODERATE"
                 
-                # Validate confidence
+                # Validate confidence - default to "low" if invalid (conservative)
                 if defect["confidence"] not in ["high", "medium", "low"]:
-                    defect["confidence"] = "medium"
+                    defect["confidence"] = "low"
                 
-                # Validate bbox if present
+                # Validate and normalize bbox if present
                 if "bbox" in defect and defect["bbox"]:
                     bbox = defect["bbox"]
                     if isinstance(bbox, dict):
-                        # Check for valid bbox values
                         required_keys = ["x", "y", "width", "height"]
                         if all(k in bbox for k in required_keys):
-                            # Validate non-negative values
-                            if any(bbox.get(k, 0) < 0 for k in required_keys):
-                                self.logger.warning(f"Invalid bbox with negative values: {bbox}")
+                            # Normalize coordinates to percentages (0-100)
+                            # If values are > 100, assume they're pixels and need conversion
+                            # For now, we assume models return percentages per prompt instructions
+                            # But if they return pixels, we'll detect and normalize
+                            raw_x = bbox.get("x", 0)
+                            raw_y = bbox.get("y", 0)
+                            raw_w = bbox.get("width", 0)
+                            raw_h = bbox.get("height", 0)
+                            
+                            # Detect if values are likely pixels (any value > 100) vs percentages
+                            # Note: This is a heuristic - ideally models always return percentages
+                            has_large_values = any(v > 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
+                            
+                            if has_large_values:
+                                # Likely pixel format - normalize assuming model image size
+                                # This is a fallback - models should return percentages per prompt
+                                self.logger.warning(f"Bbox values > 100 detected, assuming pixel format: {bbox}")
+                                # For safety, we'll set bbox to None if we can't reliably convert
+                                # In future, we could normalize if we know the model input image size
                                 defect["bbox"] = None
                                 defect["bbox_approximate"] = True
+                                self.logger.warning("Cannot reliably convert pixel coordinates without image size context - bbox removed")
+                            else:
+                                # Assume percentages (0-100), validate range
+                                if (raw_x < 0 or raw_x > 100 or raw_y < 0 or raw_y > 100 or
+                                    raw_w <= 0 or raw_w > 100 or raw_h <= 0 or raw_h > 100):
+                                    self.logger.warning(f"Bbox values out of valid percentage range (0-100): {bbox}")
+                                    defect["bbox"] = None
+                                    defect["bbox_approximate"] = True
+                                elif raw_x + raw_w > 100 or raw_y + raw_h > 100:
+                                    self.logger.warning(f"Bbox exceeds image bounds: x+width={raw_x+raw_w}, y+height={raw_y+raw_h}")
+                                    defect["bbox"] = None
+                                    defect["bbox_approximate"] = True
+                                else:
+                                    # Validate reasonableness (area between 0.1% and 50% of image)
+                                    area_percent = (raw_w * raw_h) / 100.0
+                                    if area_percent < 0.1:
+                                        self.logger.warning(f"Bbox too small (area={area_percent:.2f}% < 0.1%) - may be noise: {bbox}")
+                                        # Don't remove, but flag as potentially invalid
+                                        defect["bbox_approximate"] = True
+                                    elif area_percent > 50.0:
+                                        self.logger.warning(f"Bbox too large (area={area_percent:.2f}% > 50%) - likely error: {bbox}")
+                                        defect["bbox"] = None
+                                        defect["bbox_approximate"] = True
+                                    else:
+                                        # Valid bbox, ensure all values are in correct range
+                                        defect["bbox"] = {
+                                            "x": max(0, min(100, raw_x)),
+                                            "y": max(0, min(100, raw_y)),
+                                            "width": max(0.1, min(100, raw_w)),
+                                            "height": max(0.1, min(100, raw_h))
+                                        }
                         else:
                             defect["bbox"] = None
                     else:
@@ -389,7 +468,9 @@ class VLMInspectorAgent(BaseVLMAgent):
                 overall_condition="uncertain",
                 defects=[],
                 overall_confidence="low",
-                analysis_reasoning=f"Analysis failed due to error: {str(e)}"
+                analysis_reasoning=f"Analysis failed due to error: {str(e)}",
+                analysis_failed=True,
+                failure_reason=f"Inspector analysis failed: {str(e)}"
             )
     
     def health_check(self) -> bool:

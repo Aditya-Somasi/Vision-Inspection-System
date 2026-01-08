@@ -4,8 +4,10 @@ Uses native Groq SDK with fallback to HuggingFace for resilience.
 """
 
 import time
+import re
+import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 import base64
 import io
 
@@ -182,14 +184,10 @@ class VLMAuditorAgent(BaseVLMAgent):
         self.logger.info(f"Using provider: {self.provider} with model: {self.model_id}")
         
         try:
-            # Format inspector findings
-            inspector_findings = self._format_inspector_findings(inspector_result)
-            
-            # Build prompt
+            # Build prompt (Auditor works independently, no inspector findings in prompt per new design)
             prompt = AUDITOR_PROMPT.format(
                 criticality=context.criticality,
-                domain=context.domain or "general",
-                inspector_findings=inspector_findings
+                domain=context.domain or "general"
             )
             
             # Encode image with optimization
@@ -207,7 +205,12 @@ class VLMAuditorAgent(BaseVLMAgent):
             elapsed = time.time() - start_time
             self.logger.info(f"Auditor response received in {elapsed:.2f}s")
             
-            result_dict = self._parse_json_response(response_text)
+            # Use robust JSON parser like Inspector
+            result_dict = self._parse_json_robust(response_text)
+            
+            # Validate and fix result (same as Inspector)
+            result_dict = self._validate_and_fix_result(result_dict)
+            
             result = VLMAnalysisResult(**result_dict)
             
             self.logger.info(
@@ -225,8 +228,202 @@ class VLMAuditorAgent(BaseVLMAgent):
                 overall_condition="uncertain",
                 defects=[],
                 overall_confidence="low",
-                analysis_reasoning=f"Audit verification failed: {str(e)}"
+                analysis_reasoning=f"Audit verification failed: {str(e)}",
+                analysis_failed=True,
+                failure_reason=f"Auditor verification failed: {str(e)}"
             )
+    
+    def _parse_json_robust(self, text: str) -> Dict[str, Any]:
+        """
+        Robustly parse JSON from model response (same as Inspector).
+        Handles markdown fences, nested braces, and malformed output.
+        
+        Args:
+            text: Raw response text
+            
+        Returns:
+            Parsed JSON dict
+        """
+        text = text.strip()
+        
+        # Try 1: Extract from markdown code fence
+        fence_pattern = r'```(?:json)?\s*([\s\S]*?)```'
+        fence_matches = re.findall(fence_pattern, text)
+        if fence_matches:
+            for match in fence_matches:
+                try:
+                    return json.loads(match.strip())
+                except json.JSONDecodeError:
+                    continue
+        
+        # Try 2: Find balanced JSON object using stack-based parsing
+        def find_balanced_json(s: str) -> Optional[str]:
+            """Find the largest balanced JSON object in text."""
+            best_json = None
+            best_length = 0
+            
+            i = 0
+            while i < len(s):
+                if s[i] == '{':
+                    depth = 0
+                    start = i
+                    in_string = False
+                    escape_next = False
+                    
+                    for j in range(i, len(s)):
+                        char = s[j]
+                        
+                        if escape_next:
+                            escape_next = False
+                            continue
+                        
+                        if char == '\\':
+                            escape_next = True
+                            continue
+                        
+                        if char == '"' and not escape_next:
+                            in_string = not in_string
+                            continue
+                        
+                        if not in_string:
+                            if char == '{':
+                                depth += 1
+                            elif char == '}':
+                                depth -= 1
+                                if depth == 0:
+                                    candidate = s[start:j+1]
+                                    if len(candidate) > best_length:
+                                        try:
+                                            json.loads(candidate)
+                                            best_json = candidate
+                                            best_length = len(candidate)
+                                        except json.JSONDecodeError:
+                                            pass
+                                    break
+                i += 1
+            
+            return best_json
+        
+        balanced_json = find_balanced_json(text)
+        if balanced_json:
+            try:
+                return json.loads(balanced_json)
+            except json.JSONDecodeError:
+                pass
+        
+        # Try 3: Simple extraction (fallback)
+        start_idx = text.find("{")
+        end_idx = text.rfind("}") + 1
+        
+        if start_idx != -1 and end_idx > start_idx:
+            try:
+                return json.loads(text[start_idx:end_idx])
+            except json.JSONDecodeError:
+                pass
+        
+        # Failed to parse - log and raise
+        self.logger.error(f"JSON parsing failed. Raw text (first 500 chars): {text[:500]}")
+        raise ValueError(f"Failed to parse JSON from model response")
+    
+    def _validate_and_fix_result(self, result_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate and fix common issues in model output (same as Inspector).
+        
+        Args:
+            result_dict: Parsed JSON dict from model
+            
+        Returns:
+            Validated and fixed dict
+        """
+        # Ensure required fields exist
+        if "object_identified" not in result_dict:
+            result_dict["object_identified"] = "unknown"
+        
+        if "overall_condition" not in result_dict:
+            result_dict["overall_condition"] = "uncertain"
+        
+        if "overall_confidence" not in result_dict:
+            result_dict["overall_confidence"] = "low"
+        
+        if "defects" not in result_dict:
+            result_dict["defects"] = []
+        
+        # Validate and fix defects
+        valid_defects = []
+        for defect in result_dict.get("defects", []):
+            if isinstance(defect, dict):
+                # Ensure required defect fields
+                defect.setdefault("type", "unspecified")
+                defect.setdefault("location", "unspecified")
+                defect.setdefault("safety_impact", "MODERATE")
+                defect.setdefault("reasoning", "No reasoning provided")
+                defect.setdefault("confidence", "low")  # Conservative: default to low
+                defect.setdefault("recommended_action", "Further inspection recommended")
+                
+                # Validate safety_impact
+                if defect["safety_impact"] not in ["CRITICAL", "MODERATE", "COSMETIC"]:
+                    defect["safety_impact"] = "MODERATE"
+                
+                # Validate confidence - default to "low" if invalid
+                if defect["confidence"] not in ["high", "medium", "low"]:
+                    defect["confidence"] = "low"
+                
+                # Validate bbox if present (same logic as Inspector)
+                if "bbox" in defect and defect["bbox"]:
+                    bbox = defect["bbox"]
+                    if isinstance(bbox, dict):
+                        required_keys = ["x", "y", "width", "height"]
+                        if all(k in bbox for k in required_keys):
+                            raw_x = bbox.get("x", 0)
+                            raw_y = bbox.get("y", 0)
+                            raw_w = bbox.get("width", 0)
+                            raw_h = bbox.get("height", 0)
+                            
+                            has_large_values = any(v > 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
+                            
+                            if has_large_values:
+                                self.logger.warning(f"Bbox values > 100 detected, assuming pixel format: {bbox}")
+                                defect["bbox"] = None
+                                defect["bbox_approximate"] = True
+                                self.logger.warning("Cannot reliably convert pixel coordinates - bbox removed")
+                            else:
+                                # Validate percentage range (0-100)
+                                if (raw_x < 0 or raw_x > 100 or raw_y < 0 or raw_y > 100 or
+                                    raw_w <= 0 or raw_w > 100 or raw_h <= 0 or raw_h > 100):
+                                    self.logger.warning(f"Bbox values out of valid percentage range: {bbox}")
+                                    defect["bbox"] = None
+                                    defect["bbox_approximate"] = True
+                                elif raw_x + raw_w > 100 or raw_y + raw_h > 100:
+                                    self.logger.warning(f"Bbox exceeds image bounds: {bbox}")
+                                    defect["bbox"] = None
+                                    defect["bbox_approximate"] = True
+                                else:
+                                    # Validate reasonableness
+                                    area_percent = (raw_w * raw_h) / 100.0
+                                    if area_percent < 0.1:
+                                        self.logger.warning(f"Bbox too small (area={area_percent:.2f}%) - may be noise: {bbox}")
+                                        defect["bbox_approximate"] = True
+                                    elif area_percent > 50.0:
+                                        self.logger.warning(f"Bbox too large (area={area_percent:.2f}%) - likely error: {bbox}")
+                                        defect["bbox"] = None
+                                        defect["bbox_approximate"] = True
+                                    else:
+                                        defect["bbox"] = {
+                                            "x": max(0, min(100, raw_x)),
+                                            "y": max(0, min(100, raw_y)),
+                                            "width": max(0.1, min(100, raw_w)),
+                                            "height": max(0.1, min(100, raw_h))
+                                        }
+                        else:
+                            defect["bbox"] = None
+                    else:
+                        defect["bbox"] = None
+                
+                valid_defects.append(defect)
+        
+        result_dict["defects"] = valid_defects
+        
+        return result_dict
     
     def _format_inspector_findings(self, result: VLMAnalysisResult) -> str:
         """Format inspector findings for the auditor prompt."""
@@ -259,8 +456,9 @@ class VLMAuditorAgent(BaseVLMAgent):
             self.logger.info(f"Health check: {self.model_id} ({provider_name})")
             
             if self.use_groq:
+                # For Groq, use a text-only model for health check since Groq vision models may not be available
                 response = self.client.chat.completions.create(
-                    model=self.model_id.replace("-Instruct", "").replace("meta-llama/llama-4-maverick-17b-128e-instruct", "llama-3.3-70b-versatile"),  # Use text model for health check
+                    model="llama-3.3-70b-versatile",
                     messages=[{"role": "user", "content": "Respond with only the word 'OK'"}],
                     max_tokens=10
                 )

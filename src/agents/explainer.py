@@ -229,58 +229,27 @@ Keep each statement under 15 words. Be specific and actionable."""
                     return str(obj)
                 return str(obj)
             
-            prompt = f"""
-            You are a technical expert analyzing inspection results.
-            
-            FINDINGS:
-            {json.dumps(findings, indent=2, default=serialize_safe)}
-            
-            VERDICT: {safety_verdict.get('verdict', 'UNKNOWN')}
-            
-            TASK:
-            Generate a clear, professional summary explanation of these findings.
-            Focus on the safety implications and the reasoning behind the verdict.
-            Include the counterfactuals provided below:
-            
-            COUNTERFACTUALS:
-            {self._generate_counterfactual(consensus.get('combined_defects', []), safety_verdict)}
-            
-            REASONING CHAINS:
-            {self._format_reasoning_chain(inspector_result, auditor_result)}
-            
-            Keep the tone professional and objective.
-            """
-            
+            # Use prompt template from utils/prompts.py
+            findings_str = json.dumps(findings, indent=2, default=serialize_safe)
+            prompt = EXPLAINER_PROMPT.format(findings=findings_str)
             
             self.logger.debug("Calling LLM API...")
             
             # Generate main explanation
             explanation = self._call_llm(prompt)
             
-            # Add reasoning chains
-            reasoning_chain = self._format_reasoning_chain(inspector_result, auditor_result)
+            # Validate explanation contains required sections
+            explanation_lower = explanation.lower()
+            has_summary = any(kw in explanation_lower for kw in ["executive summary", "summary", "overview"])
+            has_recommendation = any(kw in explanation_lower for kw in ["final recommendation", "recommendation", "verdict", "action required"])
             
-            # Generate counterfactual if there are defects
-            counterfactual = ""
-            if inspector_result.defects or auditor_result.defects:
-                try:
-                    all_defects = [d for d in inspector_result.defects[:3]]
-                    counterfactual = self._generate_counterfactual(all_defects, safety_verdict)
-                except Exception as e:
-                    self.logger.warning(f"Counterfactual skipped: {e}")
-            
-            # Combine all sections
-            full_explanation = explanation.strip()
-            
-            if reasoning_chain:
-                full_explanation += f"\n\n---\n\n## REASONING CHAINS\n\n{reasoning_chain}"
-            
-            if counterfactual:
-                full_explanation += f"\n\n---\n\n## COUNTERFACTUAL ANALYSIS\n\n{counterfactual}"
+            if not has_summary or not has_recommendation:
+                self.logger.warning(f"Generated explanation missing sections: summary={has_summary}, recommendation={has_recommendation}")
+                # Explanation will be validated and fixed in nodes.py
             
             self.logger.info("Explanation generated successfully")
             
-            return full_explanation
+            return explanation.strip()
         
         except Exception as e:
             self.logger.error(f"Explanation generation failed: {e}")

@@ -8,10 +8,12 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 import io
 import os
+import re
 
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.units import inch
 from reportlab.lib.colors import HexColor, black, white, red, green, orange, Color
+from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT, TA_JUSTIFY
 from reportlab.platypus import (
@@ -52,67 +54,214 @@ def parse_explanation_sections(explanation: str) -> Dict[str, str]:
     """
     Parse explainer output into sections for structured PDF display.
     
-    Handles various markdown formats: **Bold Headers**, ## Markdown Headers
+    Handles various markdown formats: **Bold Headers**, ## Markdown Headers.
+    Preserves the full content of each section including multi-paragraph text.
+    
+    Expected format from explainer:
+    [Main explanation text]
+    
+    ---
+    
+    ## REASONING CHAINS
+    
+    [Reasoning chains content]
+    
+    ---
+    
+    ## COUNTERFACTUAL ANALYSIS
+    
+    [Counterfactual content]
     """
     # Handle None or empty explanation
     if not explanation:
         return {"SUMMARY": "Explanation not available - workflow may have been interrupted."}
     
     sections = {}
+    logger.debug(f"Parsing explanation sections. Length: {len(explanation)}")
     
     # Map of patterns to normalized section names
-    section_patterns = {
-        "SUMMARY": ["summary", "inspection findings", "verdict", "overview"],
-        "KEY TAKEAWAYS": ["key takeaways", "takeaways", "highlights"],
-        "RECOMMENDATIONS": ["recommendations", "recommended", "action items", "next steps"],
-        "REASONING CHAINS": ["reasoning chains", "reasoning", "analysis chain"],
-        "INSPECTOR ANALYSIS": ["inspector analysis", "inspector"],
-        "AUDITOR VERIFICATION": ["auditor verification", "auditor"],
-        "COUNTERFACTUAL": ["counterfactual", "what if"],
-    }
+    # Ordered by specificity (longer patterns first to avoid false matches)
+    section_patterns = [
+        ("REASONING CHAINS", ["reasoning chains", "reasoning chain"]),
+        ("INSPECTOR ANALYSIS", ["inspector analysis", "inspector:"]),
+        ("AUDITOR VERIFICATION", ["auditor verification", "auditor:"]),
+        ("COUNTERFACTUAL", ["counterfactual analysis", "counterfactual"]),
+        ("KEY TAKEAWAYS", ["key takeaways", "key findings", "highlights"]),
+        ("RECOMMENDATIONS", ["recommendations", "recommended actions", "next steps", "action items"]),
+        ("SUMMARY", ["summary", "inspection findings", "verdict", "overview"]),
+    ]
     
-    # Clean text but preserve structure markers
     text = explanation.strip()
     
-    # Split by various section markers
-    current_section = "SUMMARY"
-    current_content = []
+    # Strategy 1: Try to split by explicit section markers (---) followed by ## headers
+    # This handles the explainer format: "content\n\n---\n\n## SECTION_NAME\n\ncontent"
+    section_marker_pattern = r'(?:^|\n+)---+\n+##\s*([A-Z\s]+)\n+'
     
-    for line in text.split("\n"):
-        line_stripped = line.strip()
-        line_clean = line_stripped.replace("**", "").replace("##", "").replace("#", "").replace(":", "").strip()
-        line_lower = line_clean.lower()
+    # Find all explicit sections with markers
+    explicit_sections = list(re.finditer(section_marker_pattern, text, re.MULTILINE))
+    
+    if explicit_sections:
+        logger.debug(f"Found {len(explicit_sections)} explicit section markers")
         
-        # Check if line is a section header
-        matched_section = None
-        for section_name, patterns in section_patterns.items():
-            for pattern in patterns:
-                if pattern in line_lower and len(line_clean) < 60:  # Headers are usually short
-                    matched_section = section_name
+        # Extract SUMMARY (everything before first marker)
+        first_marker_start = explicit_sections[0].start()
+        summary_text = text[:first_marker_start].strip()
+        if summary_text:
+            # Clean up markdown
+            summary_text = summary_text.replace("**", "").replace("##", "").replace("#", "")
+            sections["SUMMARY"] = summary_text
+        
+        # Extract each named section
+        for i, match in enumerate(explicit_sections):
+            section_header = match.group(1).strip()
+            section_start = match.end()
+            
+            # Find where this section ends (either at next marker or end of text)
+            if i + 1 < len(explicit_sections):
+                section_end = explicit_sections[i + 1].start()
+            else:
+                section_end = len(text)
+            
+            section_content = text[section_start:section_end].strip()
+            
+            # Normalize section name
+            normalized_name = section_header
+            for sname, patterns in section_patterns:
+                for pattern in patterns:
+                    if pattern in section_header.lower():
+                        normalized_name = sname
+                        break
+                if normalized_name != section_header:
                     break
-            if matched_section:
-                break
+            
+            # Clean markdown
+            section_content = section_content.replace("**", "").replace("##", "").replace("#", "")
+            
+            if section_content:
+                sections[normalized_name] = section_content
+                logger.debug(f"Extracted section: {normalized_name} ({len(section_content)} chars)")
+    else:
+        logger.debug("No explicit section markers found, using pattern matching on lines")
         
-        if matched_section:
-            # Save previous section
-            if current_content:
-                content_text = "\n".join(current_content).strip()
-                # Clean up markdown formatting for PDF
-                content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
+        # Strategy 2: Fall back to line-by-line pattern matching (no explicit markers)
+        current_section = "SUMMARY"
+        current_content = []
+        
+        for line in text.split("\n"):
+            line_stripped = line.strip()
+            if not line_stripped:
+                # Preserve blank lines within sections
+                if current_content:
+                    current_content.append("")
+                continue
+            
+            line_clean = line_stripped.replace("**", "").replace("##", "").replace("#", "").replace(":", "").strip()
+            line_lower = line_clean.lower()
+            
+            # Check if line is a section header (must be at line start and reasonably short)
+            matched_section = None
+            for section_name, patterns in section_patterns:
+                for pattern in patterns:
+                    # Match if pattern is at the start of the line and line is short (header-like)
+                    if line_lower.startswith(pattern) and len(line_clean) < 80:
+                        matched_section = section_name
+                        break
+                if matched_section:
+                    break
+            
+            if matched_section:
+                # Save previous section
+                if current_content:
+                    content_text = "\n".join(current_content).strip()
+                    # Clean up markdown formatting for PDF
+                    content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
+                    if content_text:
+                        sections[current_section] = content_text
+                current_section = matched_section
+                current_content = []
+            else:
+                # Add content line
+                if line_stripped:
+                    clean_line = line_stripped.replace("**", "").replace("##", "").replace("#", "")
+                    current_content.append(clean_line)
+                elif current_content:
+                    # Preserve paragraph breaks
+                    current_content.append("")
+        
+        # Save last section
+        if current_content:
+            content_text = "\n".join(current_content).strip()
+            content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
+            if content_text:
                 sections[current_section] = content_text
-            current_section = matched_section
-            current_content = []
-        else:
-            if line_stripped:
-                # Clean markdown for PDF compatibility
-                clean_line = line_stripped.replace("**", "").replace("##", "").replace("#", "")
-                current_content.append(clean_line)
     
-    # Save last section
-    if current_content:
-        content_text = "\n".join(current_content).strip()
-        content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
-        sections[current_section] = content_text
+    # Strategy 3: Keyword-based fallback (more robust, works even if formatting varies)
+    if not sections or "SUMMARY" not in sections:
+        logger.debug("Trying keyword-based section extraction as fallback")
+        
+        # Keywords that indicate section starts
+        section_keywords = {
+            "EXECUTIVE SUMMARY": ["executive summary", "summary", "overview"],
+            "INSPECTION DETAILS": ["inspection details", "details", "findings"],
+            "DEFECT ANALYSIS": ["defect analysis", "defect", "defects"],
+            "FINAL RECOMMENDATION": ["final recommendation", "recommendation", "verdict", "action required"],
+            "REASONING CHAINS": ["reasoning chains", "reasoning"],
+            "COUNTERFACTUAL": ["counterfactual", "what if"]
+        }
+        
+        lines = text.split("\n")
+        current_section = None
+        current_content = []
+        
+        for line in lines:
+            line_lower = line.lower().strip()
+            
+            # Check if line matches any section keyword
+            matched_keyword = None
+            for section_name, keywords in section_keywords.items():
+                for keyword in keywords:
+                    if keyword in line_lower and len(line_lower) < 100:  # Reasonable header length
+                        matched_keyword = section_name
+                        break
+                if matched_keyword:
+                    break
+            
+            if matched_keyword:
+                # Save previous section
+                if current_section and current_content:
+                    content = "\n".join(current_content).strip()
+                    if content:
+                        sections[current_section] = content.replace("**", "").replace("##", "")
+                
+                current_section = matched_keyword
+                current_content = []
+            elif current_section:
+                # Add to current section
+                if line.strip():
+                    current_content.append(line.strip().replace("**", "").replace("##", ""))
+            elif not current_section:
+                # Before any section identified, treat as SUMMARY
+                if line.strip() and not line_lower.startswith(("---", "##")):
+                    current_section = "SUMMARY"
+                    current_content.append(line.strip().replace("**", "").replace("##", ""))
+        
+        # Save last section
+        if current_section and current_content:
+            content = "\n".join(current_content).strip()
+            if content:
+                sections[current_section] = content.replace("**", "").replace("##", "")
+    
+    # Ensure we have at least a SUMMARY - if not, use first meaningful content
+    if not sections or "SUMMARY" not in sections:
+        logger.warning("No SUMMARY section found, generating fallback from raw text")
+        # Take first 3-5 sentences as summary
+        sentences = explanation.split('.')
+        summary_text = '. '.join(sentences[:5]).strip()
+        if not summary_text:
+            summary_text = explanation[:500]  # First 500 chars as fallback
+        sections["SUMMARY"] = summary_text.replace("**", "").replace("##", "").replace("#", "")
+    
+    logger.debug(f"Parsed {len(sections)} sections: {list(sections.keys())}")
     
     return sections
 
@@ -649,6 +798,30 @@ class InspectionReport:
         
         # Parse explanation into sections
         sections = parse_explanation_sections(explanation)
+        logger.info(f"Parsed {len(sections)} sections for PDF: {list(sections.keys())}")
+        
+        # Validate that SUMMARY section exists (critical) - generate fallback if missing
+        if "SUMMARY" not in sections or not sections.get("SUMMARY", "").strip():
+            logger.warning("SUMMARY section missing or empty - generating fallback")
+            inspector = state.get("inspector_result", {})
+            object_name = inspector.get("object_identified", "component")
+            verdict_str = verdict.get("verdict", "UNKNOWN")
+            
+            fallback_summary = (
+                f"Inspection of {object_name} identified {defect_count} defect(s). "
+                f"Final verdict: {verdict_str}. "
+                f"Both Inspector and Auditor models analyzed the image independently. "
+            )
+            if defect_count > 0:
+                if critical_count > 0:
+                    fallback_summary += f"{critical_count} critical defect(s) were detected."
+                else:
+                    fallback_summary += "No critical defects detected."
+            else:
+                fallback_summary += "No defects were detected."
+            
+            sections["SUMMARY"] = fallback_summary
+            logger.info("Generated fallback SUMMARY from structured data")
         
         # Section header style
         section_header_style = ParagraphStyle(
@@ -672,16 +845,83 @@ class InspectionReport:
             "COUNTERFACTUAL"
         ]
         
+        # Track which sections we've displayed
+        displayed_sections = set()
+        
         for section_name in section_order:
             if section_name in sections:
+                section_content = sections[section_name].strip()
+                if not section_content:
+                    continue
+                
+                displayed_sections.add(section_name)
+                    
                 # Use user-friendly display names
-                display_name = section_name.title()
-                elements.append(Paragraph(display_name, section_header_style))
-                elements.append(Paragraph(sections[section_name], self.styles["CustomBodyText"]))
-                elements.append(Spacer(1, 0.1 * inch))
+                display_name = section_name.replace("_", " ").title()
+                elements.append(Paragraph(f"<b>{display_name}</b>", section_header_style))
+                
+                # Special formatting for specific sections
+                if section_name in ["RECOMMENDATIONS", "KEY TAKEAWAYS"]:
+                    # Format bullet points - split by common bullet markers
+                    # Split by bullet patterns: "* ", "• ", "- ", "1. ", etc.
+                    lines = re.split(r'\n(?:\*|•|-|[0-9]+\.)\s+', section_content)
+                    if lines and lines[0].strip():
+                        # First line without bullet
+                        elements.append(Paragraph(lines[0], self.styles["CustomBodyText"]))
+                    # Remaining lines as bullets
+                    for line in lines[1:]:
+                        line = line.strip()
+                        if line:
+                            # Use paragraph with bullet list style
+                            bullet_text = f"• {line}"
+                            elements.append(Paragraph(bullet_text, self.styles["CustomBodyText"]))
+                elif section_name in ["REASONING CHAINS", "INSPECTOR ANALYSIS", "AUDITOR VERIFICATION"]:
+                    # For analysis sections, preserve structure with monospace-style formatting
+                    lines = section_content.split("\n")
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            # Preserve numbered lists and indentation
+                            if re.match(r'^\d+\.', line):
+                                elements.append(Paragraph(f"<b>{line}</b>", self.styles["CustomBodyText"]))
+                            else:
+                                elements.append(Paragraph(line, self.styles["CustomBodyText"]))
+                else:
+                    # Default: display as paragraph with preserved structure
+                    # Split into logical chunks (paragraphs separated by blank lines)
+                    paragraphs = section_content.split("\n\n")
+                    for para in paragraphs:
+                        para = para.strip().replace("\n", " ")  # Normalize whitespace
+                        if para:
+                            elements.append(Paragraph(para, self.styles["CustomBodyText"]))
+                
+                elements.append(Spacer(1, 0.15 * inch))
         
-        # If no sections were parsed, just display the raw explanation
-        if not any(s in sections for s in section_order):
+        # Display any additional sections that weren't in the predefined order
+        additional_sections = set(sections.keys()) - set(displayed_sections)
+        if additional_sections:
+            logger.info(f"Displaying additional sections: {additional_sections}")
+            for section_name in additional_sections:
+                section_content = sections[section_name].strip()
+                if not section_content:
+                    continue
+                
+                # Use user-friendly display names
+                display_name = section_name.replace("_", " ").title()
+                elements.append(Paragraph(f"<b>{display_name}</b>", section_header_style))
+                
+                # Default formatting for unexpected sections
+                paragraphs = section_content.split("\n\n")
+                for para in paragraphs:
+                    para = para.strip().replace("\n", " ")  # Normalize whitespace
+                    if para:
+                        elements.append(Paragraph(para, self.styles["CustomBodyText"]))
+                
+                elements.append(Spacer(1, 0.15 * inch))
+        
+        # If no sections were parsed or explanation is empty, log warning
+        if not displayed_sections and not additional_sections:
+            logger.warning("No sections were parsed from explanation. Displaying raw text as fallback.")
             display_text = explanation if explanation else "Explanation not available."
             # Clean any residual markdown
             display_text = display_text.replace("**", "").replace("##", "").replace("#", "")
@@ -713,8 +953,21 @@ class InspectionReport:
             heatmap_path = REPORT_DIR / f"heatmap_{image_path.stem}.jpg"
             annotated_path = REPORT_DIR / f"annotated_{image_path.stem}.jpg"
             
+            # Get context for confidence filtering
+            context = state.get("context", {})
+            criticality = context.get("criticality", "medium")
+            actual_model_size = config.max_image_dimension  # From config (default 2048)
+            
             # Create heatmap overlay (red hotspots on defects)
-            create_heatmap_overlay(image_path, defects, heatmap_path)
+            # Pass actual_model_size and filtering parameters
+            create_heatmap_overlay(
+                image_path, 
+                defects, 
+                heatmap_path,
+                actual_model_size=actual_model_size,
+                confidence_threshold="low",  # Include all defects, but visual distinction by confidence
+                criticality=criticality
+            )
             
             # Create numbered annotation image
             if defects:
@@ -722,14 +975,22 @@ class InspectionReport:
                 for i, defect in enumerate(defects, 1):
                     bbox = defect.get("bbox", {})
                     boxes.append({
-                        "x": bbox.get("x", 50 + i*30),
-                        "y": bbox.get("y", 50 + i*30), 
-                        "width": bbox.get("width", 50),
-                        "height": bbox.get("height", 50),
+                        "x": bbox.get("x", 0),
+                        "y": bbox.get("y", 0),
+                        "width": bbox.get("width", 0),
+                        "height": bbox.get("height", 0),
                         "label": f"#{i}",
-                        "severity": defect.get("safety_impact", "MODERATE")
+                        "severity": defect.get("safety_impact", "MODERATE"),
+                        "confidence": defect.get("confidence", "medium")  # Include confidence for filtering
                     })
-                draw_bounding_boxes(image_path, boxes, annotated_path)
+                # Pass criticality and confidence_threshold for filtering
+                draw_bounding_boxes(
+                    image_path, 
+                    boxes, 
+                    annotated_path,
+                    confidence_threshold="low",  # Include all, but visual distinction
+                    criticality=criticality
+                )
             else:
                 # No defects - just copy original
                 import shutil

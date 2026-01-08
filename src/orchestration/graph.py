@@ -4,7 +4,7 @@ LangGraph workflow construction and execution.
 
 import time
 import uuid
-from typing import Literal, Dict, Any, Optional
+from typing import Literal, Dict, Any, Optional, List
 
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
@@ -13,10 +13,12 @@ from langgraph.types import Command
 from src.orchestration.state import InspectionState
 from src.orchestration.nodes import (
     initialize_inspection,
+    check_image_quality,
     run_inspector,
     run_auditor,
     analyze_consensus_node,
     evaluate_safety_node,
+    clean_verification_node,
     human_review_node,
     generate_explanation,
     save_to_database,
@@ -38,13 +40,47 @@ def should_run_human_review(
     state: InspectionState
 ) -> Literal["human_review", "generate_explanation"]:
     """
-    Determine if human review is needed.
+    Determine if human review is needed based on safety verdict.
     
-    NOTE: Human review interrupt is DISABLED to ensure full workflow completion.
-    Human review status is still recorded and shown in PDF report.
+    Human review is required when:
+    - requires_human_review flag is True
+    - Verdict is REQUIRES_HUMAN_REVIEW
+    - Critical failures detected
+    - High criticality items (even when "clean")
     """
-    # ALWAYS skip to explanation - human review is informational only (shown in PDF)
-    # The requires_human_review flag is still set for PDF display purposes
+    # Check if human review is required
+    requires_human = state.get("requires_human_review", False)
+    has_critical_failure = state.get("has_critical_failure", False)
+    
+    # Check verdict
+    safety_verdict = state.get("safety_verdict", {})
+    verdict = safety_verdict.get("verdict", "UNKNOWN")
+    
+    # Check context for high criticality
+    context = state.get("context", {})
+    criticality = context.get("criticality", "medium")
+    
+    # Require human review if:
+    # 1. Explicitly flagged by safety gates
+    # 2. Verdict is REQUIRES_HUMAN_REVIEW
+    # 3. Critical failure detected
+    # 4. High criticality (conservative approach)
+    if requires_human or verdict == "REQUIRES_HUMAN_REVIEW" or has_critical_failure:
+        logger.info("Human review required - routing to human_review node")
+        return "human_review"
+    
+    # For high criticality, require review even if verdict is SAFE (conservative)
+    # This addresses the verification report concern about high-criticality "clean" items
+    if criticality == "high":
+        consensus = state.get("consensus", {})
+        defect_count = len(consensus.get("combined_defects", []))
+        
+        # High criticality + zero defects still requires human verification
+        if defect_count == 0:
+            logger.info("High criticality with zero defects - requiring human review")
+            return "human_review"
+    
+    # Otherwise, proceed to explanation
     return "generate_explanation"
 
 
@@ -60,10 +96,12 @@ def create_inspection_workflow() -> StateGraph:
     
     # Add nodes
     workflow.add_node("initialize", initialize_inspection)
+    workflow.add_node("quality_check", check_image_quality)
     workflow.add_node("inspector", run_inspector)
     workflow.add_node("auditor", run_auditor)
     workflow.add_node("consensus", analyze_consensus_node)
     workflow.add_node("safety", evaluate_safety_node)
+    workflow.add_node("clean_verification", clean_verification_node)
     workflow.add_node("human_review", human_review_node)
     workflow.add_node("explanation", generate_explanation)
     workflow.add_node("database", save_to_database)
@@ -73,14 +111,16 @@ def create_inspection_workflow() -> StateGraph:
     workflow.set_entry_point("initialize")
     
     # Add edges
-    workflow.add_edge("initialize", "inspector")
+    workflow.add_edge("initialize", "quality_check")
+    workflow.add_edge("quality_check", "inspector")
     workflow.add_edge("inspector", "auditor")
     workflow.add_edge("auditor", "consensus")
     workflow.add_edge("consensus", "safety")
+    workflow.add_edge("safety", "clean_verification")
     
-    # Conditional edge for human review
+    # Conditional edge for human review (after clean verification)
     workflow.add_conditional_edges(
-        "safety",
+        "clean_verification",
         should_run_human_review,
         {
             "human_review": "human_review",
@@ -99,6 +139,29 @@ def create_inspection_workflow() -> StateGraph:
     return workflow
 
 
+def run_single_image_inspection(
+    image_path: str,
+    criticality: str = "medium",
+    domain: Optional[str] = None,
+    user_notes: Optional[str] = None,
+    image_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Run inspection workflow for a single image.
+    
+    Args:
+        image_path: Path to image file
+        criticality: Criticality level (low, medium, high)
+        domain: Optional domain hint
+        user_notes: Optional user notes
+        image_id: Optional image ID for multi-image sessions
+    
+    Returns:
+        Final inspection state for this image
+    """
+    return run_inspection(image_path, criticality, domain, user_notes)
+
+
 def run_inspection(
     image_path: str,
     criticality: str = "medium",
@@ -106,10 +169,10 @@ def run_inspection(
     user_notes: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Run complete inspection workflow.
+    Run complete inspection workflow for a single image.
     
     Args:
-        image_path: Path to image file
+        image_path: Path to image file (can be str or List[str] for backward compatibility)
         criticality: Criticality level (low, medium, high)
         domain: Optional domain hint
         user_notes: Optional user notes
@@ -142,6 +205,7 @@ def run_inspection(
         "auditor_result": None,
         "consensus": None,
         "safety_verdict": None,
+        "clean_verification": None,
         "requires_human_review": False,
         "human_decision": None,
         "human_notes": None,
@@ -149,6 +213,10 @@ def run_inspection(
         "report_path": None,
         "processing_time": None,
         "error": None,
+        "failure_history": [],
+        "has_critical_failure": False,
+        "inspector_retry_count": 0,
+        "auditor_retry_count": 0,
         "current_step": "pending"
     }
     
@@ -230,6 +298,125 @@ def resume_inspection(
     return final_state
 
 
+def run_multi_image_inspection(
+    image_paths: List[str],
+    criticality: str = "medium",
+    domain: Optional[str] = None,
+    user_notes: Optional[str] = None,
+    session_id: Optional[str] = None,
+    image_id_map: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    """
+    Run inspection workflow for multiple images in a session.
+    
+    Args:
+        image_paths: List of image file paths
+        criticality: Criticality level for all images
+        domain: Optional domain hint
+        user_notes: Optional user notes
+        session_id: Optional session ID for tracking
+        image_id_map: Optional mapping of image_path -> image_id (to preserve IDs from uploaded_images)
+    
+    Returns:
+        Aggregated session results with per-image results
+    """
+    from datetime import datetime
+    from src.orchestration.session_aggregation import aggregate_session_results
+    
+    session_start_time = datetime.now()
+    
+    if not session_id:
+        session_id = str(uuid.uuid4())[:8]
+    
+    logger.info(f"Starting multi-image inspection session {session_id} with {len(image_paths)} images")
+    
+    # Per-image results storage (keyed by image_id matching uploaded_images)
+    image_results = {}
+    completed_count = 0
+    failed_count = 0
+    all_verdicts = []
+    
+    # Process each image sequentially
+    for idx, image_path in enumerate(image_paths):
+        # Use existing image_id if provided, otherwise generate new one
+        if image_id_map and image_path in image_id_map:
+            image_id = image_id_map[image_path]
+        else:
+            image_id = str(uuid.uuid4())[:8]
+        
+        logger.info(f"Processing image {idx + 1}/{len(image_paths)}: {image_path} (ID: {image_id})")
+        
+        try:
+            # Run single image inspection
+            result = run_inspection(
+                image_path=image_path,
+                criticality=criticality,
+                domain=domain,
+                user_notes=user_notes
+            )
+            
+            # Store per-image result
+            image_results[image_id] = {
+                "image_path": image_path,
+                "inspector_result": result.get("inspector_result"),
+                "auditor_result": result.get("auditor_result"),
+                "consensus": result.get("consensus"),
+                "safety_verdict": result.get("safety_verdict"),
+                "clean_verification": result.get("clean_verification"),
+                "report_path": result.get("report_path"),
+                "processing_time": result.get("processing_time", 0),
+                "error": result.get("error"),
+                "failure_history": result.get("failure_history", []),
+                "completed": True
+            }
+            
+            # Aggregate metrics
+            verdict = result.get("safety_verdict", {}).get("verdict", "UNKNOWN")
+            all_verdicts.append(verdict)
+            
+            completed_count += 1
+            
+        except Exception as e:
+            logger.error(f"Failed to process image {image_path}: {e}", exc_info=True)
+            image_results[image_id] = {
+                "image_path": image_path,
+                "error": str(e),
+                "failure_history": [str(e)],
+                "completed": False
+            }
+            failed_count += 1
+    
+    # Aggregate session results using aggregation utility
+    session_results_raw = aggregate_session_results(image_results)
+    
+    # Calculate session-level metrics
+    session_end_time = datetime.now()
+    session_duration = (session_end_time - session_start_time).total_seconds()
+    
+    # Enhance session results with timing and IDs
+    session_results = {
+        **session_results_raw,
+        "session_id": session_id,
+        "session_duration": session_duration,
+        "session_start_time": session_start_time.isoformat(),
+        "session_end_time": session_end_time.isoformat(),
+        "per_image_verdicts": all_verdicts
+    }
+    
+    logger.info(
+        f"Multi-image session {session_id} complete: "
+        f"{completed_count}/{len(image_paths)} images, "
+        f"verdict: {session_results['aggregate_verdict']}"
+    )
+    
+    return {
+        "session_id": session_id,
+        "image_results": image_results,
+        "session_results": session_results,
+        "processing_time": session_duration
+    }
+
+
 def get_pending_reviews() -> Dict[str, Dict[str, Any]]:
     """Get all workflows pending human review."""
     pending = {}
@@ -274,6 +461,7 @@ async def run_inspection_streaming(
         "auditor_result": None,
         "consensus": None,
         "safety_verdict": None,
+        "clean_verification": None,
         "requires_human_review": False,
         "human_decision": None,
         "human_notes": None,
@@ -281,6 +469,10 @@ async def run_inspection_streaming(
         "report_path": None,
         "processing_time": None,
         "error": None,
+        "failure_history": [],
+        "has_critical_failure": False,
+        "inspector_retry_count": 0,
+        "auditor_retry_count": 0,
         "current_step": "pending"
     }
     

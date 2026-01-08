@@ -51,6 +51,24 @@ class ConsensusAnalyzer:
         # Calculate agreement score
         type_agreement = len(common_types) / len(all_types) if all_types else 1.0
         
+        # Special case: Both report "no defects" - require HIGH confidence for true agreement
+        # If both have 0 defects but LOW confidence, treat as disagreement (conservative)
+        both_no_defects = (inspector_defect_count == 0 and auditor_defect_count == 0)
+        inspector_high_conf = inspector_result.overall_confidence == "high"
+        auditor_high_conf = auditor_result.overall_confidence == "high"
+        
+        if both_no_defects:
+            # For "no defects" agreement, both must have HIGH confidence
+            if not (inspector_high_conf and auditor_high_conf):
+                # Low confidence "no defects" -> treat as disagreement (conservative)
+                self.logger.warning(
+                    f"Both models report 'no defects' but confidence is not HIGH for both "
+                    f"(Inspector: {inspector_result.overall_confidence}, "
+                    f"Auditor: {auditor_result.overall_confidence}) - treating as disagreement"
+                )
+                type_agreement = 0.0  # Force disagreement
+                conditions_agree = False  # Override condition agreement
+        
         # Count agreement (allow ±1 difference)
         count_diff = abs(inspector_defect_count - auditor_defect_count)
         count_agreement = (
