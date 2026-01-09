@@ -182,7 +182,7 @@ Agent: "No, this component is UNSAFE. The rust indicates metal degradation..."
 |----------|----------|---------|-------------|
 | `HUGGINGFACE_API_KEY` | ✅ Yes | - | HuggingFace API token |
 | `VLM_INSPECTOR_MODEL` | No | Qwen2-VL-7B | Primary inspection model |
-| `VLM_AUDITOR_MODEL` | No | Llama-3.2-11B | Verification model |
+| `VLM_AUDITOR_MODEL` | No |llama-4-maverick | Verification model |
 | `EXPLAINER_MODEL` | No | Llama-3.1-8B | Report generation model |
 | `CONFIDENCE_THRESHOLD` | No | 0.7 | Minimum confidence for auto-approval |
 | `MAX_DEFECTS_AUTO` | No | 2 | Max defects before human review |
@@ -434,7 +434,7 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 - [HuggingFace](https://huggingface.co/) for model APIs
 - [Streamlit](https://streamlit.io/) for UI framework
 - [Qwen Team](https://github.com/QwenLM) for Qwen2-VL
-- [Meta AI](https://ai.meta.com/) for Llama 3.2 Vision
+- [Meta AI](https://ai.meta.com/) for llama-4-maverick
 
 ---
 
