@@ -17,23 +17,24 @@ from utils.config import config
 
 def render_multi_image_upload_zone() -> List[Any]:
     """
-    Render multi-image drag-and-drop upload zone.
+    Render single image upload zone (multi-image disabled).
     
     Returns:
-        List of uploaded files (Streamlit UploadedFile objects)
+        List with single uploaded file (Streamlit UploadedFile objects)
     """
-    st.subheader("📤 Upload Images")
-    st.markdown("Upload one or multiple images for batch inspection")
+    st.subheader("📤 Upload Image")
+    st.markdown("Upload a single image for inspection")
     
-    uploaded_files = st.file_uploader(
-        "Choose image files",
+    uploaded_file = st.file_uploader(
+        "Choose an image file",
         type=config.allowed_extensions_list,
-        accept_multiple_files=True,
-        help=f"Maximum file size: {config.max_file_size_mb}MB per file. You can select multiple files.",
+        accept_multiple_files=False,
+        help=f"Maximum file size: {config.max_file_size_mb}MB. Single image only.",
         label_visibility="collapsed"
     )
     
-    return uploaded_files if uploaded_files else []
+    # Return as list for compatibility, but only one file
+    return [uploaded_file] if uploaded_file else []
 
 
 def render_image_preview_card(image_id: str, filename: str, filepath: Path, status: str = "uploaded"):
@@ -71,13 +72,20 @@ def render_image_preview_card(image_id: str, filename: str, filepath: Path, stat
         st.caption(f"{emoji} {status.title()}")
     
     with col3:
-        if status == "uploaded":
-            if st.button("🗑️", key=f"remove_{image_id}", help="Remove image"):
-                # Remove from uploaded_images list
-                uploaded_images = get_state("uploaded_images", [])
-                uploaded_images = [img for img in uploaded_images if img.get("image_id") != image_id]
-                set_state("uploaded_images", uploaded_images)
-                st.rerun()
+        # Show delete button for all statuses (uploaded, complete, failed)
+        if st.button("🗑️", key=f"remove_{image_id}", help="Remove image"):
+            # Remove from uploaded_images list
+            uploaded_images = get_state("uploaded_images", [])
+            uploaded_images = [img for img in uploaded_images if img.get("image_id") != image_id]
+            set_state("uploaded_images", uploaded_images)
+            
+            # Also clear related state if this was the only/active image
+            image_results = get_state("image_results", {})
+            if image_id in image_results:
+                del image_results[image_id]
+                set_state("image_results", image_results)
+            
+            st.rerun()
 
 
 def render_image_preview_gallery():
@@ -151,6 +159,7 @@ def render_batch_config_form() -> Dict[str, Any]:
 def process_uploaded_files(uploaded_files: List[Any], metadata: Dict[str, Any]):
     """
     Process uploaded files and add them to session state.
+    For single image mode: clears previous images before adding new one.
     
     Args:
         uploaded_files: List of Streamlit UploadedFile objects
@@ -167,6 +176,14 @@ def process_uploaded_files(uploaded_files: List[Any], metadata: Dict[str, Any]):
     
     # Get existing uploaded images
     uploaded_images = get_state("uploaded_images", [])
+    
+    # For single image mode: clear previous images when processing a new one
+    if uploaded_files and len(uploaded_files) == 1:
+        # Clear all previous images when a new one is being processed
+        uploaded_images = []
+        # Also clear related results
+        set_state("image_results", {})
+        set_state("session_results", {})
     
     # Process each uploaded file
     for uploaded_file in uploaded_files:

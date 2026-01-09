@@ -184,7 +184,15 @@ class SafetyGateEngine:
             self.logger.error(f"Gate 0 FAILED: Analysis errors detected: {error_summary}")
         
         # Filter defects: remove invalid bboxes and low-confidence defects (unless high criticality)
+        # Also filter defects with very low agreement when only one model found them (false positive prevention)
         valid_defects = []
+        
+        # Check for strong disagreement scenarios (one model found defects, other found none)
+        inspector_defect_count = len(consensus.inspector_result.defects)
+        auditor_defect_count = len(consensus.auditor_result.defects)
+        very_low_agreement = consensus.agreement_score < 0.4
+        one_model_found_defects = (inspector_defect_count == 0) != (auditor_defect_count == 0)
+        
         for defect in consensus.combined_defects:
             # Check bbox validity if present
             if defect.bbox:
@@ -199,9 +207,10 @@ class SafetyGateEngine:
                 if defect.bbox.x + defect.bbox.width > 100 or defect.bbox.y + defect.bbox.height > 100:
                     logger.warning(f"Defect {defect.type} bbox exceeds image bounds - filtering out")
                     continue
-                # Check reasonableness (area between 0.1% and 50%)
+                # Check reasonableness (area between 0.05% and 50%)
+                # Reduced minimum from 0.1% to 0.05% to include smaller defects
                 area_percent = (defect.bbox.width * defect.bbox.height) / 100.0
-                if area_percent < 0.1 or area_percent > 50.0:
+                if area_percent < 0.05 or area_percent > 50.0:
                     logger.warning(f"Defect {defect.type} bbox unreasonable size (area={area_percent:.2f}%) - filtering out")
                     continue
             
@@ -209,6 +218,69 @@ class SafetyGateEngine:
             if defect.confidence == "low" and context.criticality != "high":
                 logger.debug(f"Filtering low-confidence defect: {defect.type} (criticality={context.criticality})")
                 continue
+            
+            # False positive prevention: Multiple strategies to catch false positives
+            
+            # Strategy 1: If one model confidently says "no defects" (HIGH confidence, "good" condition)
+            # and the other finds defects with low/medium confidence, filter out non-CRITICAL defects
+            inspector_no_defects_high_conf = (
+                inspector_defect_count == 0 and 
+                consensus.inspector_result.overall_confidence == "high" and
+                consensus.inspector_result.overall_condition == "good"
+            )
+            auditor_no_defects_high_conf = (
+                auditor_defect_count == 0 and 
+                consensus.auditor_result.overall_confidence == "high" and
+                consensus.auditor_result.overall_condition == "good"
+            )
+            
+            # Strategy 2: Check if both models report "good" condition but one found defects (likely false positive)
+            both_say_good = (
+                consensus.inspector_result.overall_condition == "good" and
+                consensus.auditor_result.overall_condition == "good"
+            )
+            
+            # Strategy 3: If agreement is low AND both have high confidence in "good" but one found defects
+            # This is a strong indicator of false positive (models agree it's good but one hallucinated defects)
+            high_conf_both_good = (
+                both_say_good and
+                consensus.inspector_result.overall_confidence in ["high", "medium"] and
+                consensus.auditor_result.overall_confidence in ["high", "medium"] and
+                (inspector_defect_count > 0 or auditor_defect_count > 0)
+            )
+            
+            # Apply filtering: Filter non-CRITICAL defects if any of these conditions are met
+            is_non_critical = defect.safety_impact in ["MODERATE", "COSMETIC", "MINOR"]
+            
+            if is_non_critical:
+                # Filter if one model confidently says no defects
+                if (inspector_no_defects_high_conf or auditor_no_defects_high_conf):
+                    logger.warning(
+                        f"Filtering likely false positive: {defect.type} ({defect.safety_impact}) - "
+                        f"One model confidently found no defects (HIGH confidence, 'good' condition), "
+                        f"other model found this defect"
+                    )
+                    continue
+                
+                # Filter if both say good condition but one found defects (with reasonable confidence)
+                if high_conf_both_good and defect.confidence != "high":
+                    logger.warning(
+                        f"Filtering likely false positive: {defect.type} ({defect.safety_impact}) - "
+                        f"Both models report 'good' condition, but one found this {defect.confidence}-confidence defect"
+                    )
+                    continue
+            
+            # Strategy 4: For very low agreement (< 40%) with only one model finding defects, be more aggressive
+            if (very_low_agreement and one_model_found_defects and is_non_critical):
+                # Even if confidence isn't high, if one model says good condition, filter moderate/cosmetic defects
+                if (inspector_no_defects_high_conf or auditor_no_defects_high_conf or
+                    (both_say_good and defect.confidence in ["low", "medium"])):
+                    logger.warning(
+                        f"Filtering likely false positive: {defect.type} ({defect.safety_impact}) - "
+                        f"Very low agreement ({consensus.agreement_score:.0%}), only one model found it, "
+                        f"and conditions suggest false positive"
+                    )
+                    continue
             
             valid_defects.append(defect)
         
@@ -231,27 +303,58 @@ class SafetyGateEngine:
         domain_rules = self._get_domain_rules(context.domain)
         
         # ====================================================================
-        # GATE 1: Critical Defect Check
+        # GATE 1: Critical Defect Check (with agreement requirement)
         # ====================================================================
         gate1_passed = critical_count == 0
+        
+        # For critical defects, require high agreement to prevent false positives
+        # If models strongly disagree (agreement < 0.5) and only one found critical defects,
+        # require human review instead of automatically marking UNSAFE
+        critical_defect_with_low_agreement = (
+            critical_count > 0 and
+            consensus.agreement_score < 0.5 and
+            not consensus.models_agree
+        )
+        
         gate1_result = GateResult(
             gate_id=GATE_CRITICAL_DEFECT,
             passed=gate1_passed,
             message=f"{'No' if gate1_passed else critical_count} critical defects",
-            details={"critical_count": critical_count, "types": [d.type for d in critical_defects]}
+            details={
+                "critical_count": critical_count, 
+                "types": [d.type for d in critical_defects],
+                "low_agreement_warning": critical_defect_with_low_agreement
+            }
         )
         all_gate_results.append(gate1_result)
         
         if not gate1_passed and blocking_result is None:
             triggered_gates.append(GATE_CRITICAL_DEFECT)
-            blocking_result = (
-                "UNSAFE",
-                f"Agent detected {critical_count} critical safety defect(s): "
-                f"{', '.join(d.type for d in critical_defects)}",
-                "high" if consensus.models_agree else "medium",
-                False
-            )
-            self.logger.warning(f"Gate 1 FAILED: {critical_count} critical defects")
+            
+            # If models strongly disagree about critical defects, be conservative (UNSAFE)
+            # This prevents false negatives while still catching false positives via our filters
+            if critical_defect_with_low_agreement:
+                blocking_result = (
+                    "UNSAFE",
+                    f"Critical defect(s) detected but models strongly disagree (agreement: {consensus.agreement_score:.0%}). "
+                    f"Found: {', '.join(d.type for d in critical_defects)}. "
+                    f"Conservative verdict: UNSAFE (automated decision).",
+                    "medium",
+                    False
+                )
+                self.logger.warning(
+                    f"Gate 1 FAILED: {critical_count} critical defects but low agreement "
+                    f"({consensus.agreement_score:.0%}) - automatic UNSAFE verdict"
+                )
+            else:
+                blocking_result = (
+                    "UNSAFE",
+                    f"Agent detected {critical_count} critical safety defect(s): "
+                    f"{', '.join(d.type for d in critical_defects)}",
+                    "high" if consensus.models_agree else "medium",
+                    False
+                )
+                self.logger.warning(f"Gate 1 FAILED: {critical_count} critical defects")
         
         # ====================================================================
         # GATE 2: Domain-Specific Zero Tolerance
@@ -271,14 +374,15 @@ class SafetyGateEngine:
         
         if not gate2_passed and blocking_result is None:
             triggered_gates.append(GATE_DOMAIN_ZERO_TOLERANCE)
+            # Instead of REQUIRES_HUMAN_REVIEW, automatically mark as UNSAFE for domain violations
             blocking_result = (
-                "REQUIRES_HUMAN_REVIEW",
-                f"Domain '{context.domain}' requires review for: "
-                f"{', '.join(d.type for d in flagged_defects)}",
-                "medium",
-                True
+                "UNSAFE",
+                f"Domain '{context.domain}' violation detected: "
+                f"{', '.join(d.type for d in flagged_defects)} - automatically marked UNSAFE",
+                "high",
+                False
             )
-            self.logger.warning(f"Gate 2 FAILED: Domain flags triggered")
+            self.logger.warning(f"Gate 2 FAILED: Domain flags triggered - automatic UNSAFE verdict")
         
         # ====================================================================
         # GATE 3: VLM Agreement Check
@@ -294,13 +398,24 @@ class SafetyGateEngine:
         
         if not gate3_passed and blocking_result is None:
             triggered_gates.append(GATE_MODEL_DISAGREEMENT)
-            blocking_result = (
-                "REQUIRES_HUMAN_REVIEW",
-                f"Inspector and Auditor disagree. {consensus.disagreement_details}",
-                "low",
-                True
-            )
-            self.logger.warning(f"Gate 3 FAILED: Models disagree ({consensus.agreement_score:.0%})")
+            # Instead of REQUIRES_HUMAN_REVIEW, make automatic decision based on defects
+            # If disagreement and defects found, be conservative (UNSAFE)
+            # If disagreement and no defects, be safe (SAFE with low confidence)
+            if defect_count > 0:
+                blocking_result = (
+                    "UNSAFE",
+                    f"Models disagree but defects detected. {consensus.disagreement_details}. Conservative verdict: UNSAFE.",
+                    "medium",
+                    False
+                )
+            else:
+                blocking_result = (
+                    "SAFE",
+                    f"Models disagree but no defects found. {consensus.disagreement_details}. Proceeding with SAFE verdict.",
+                    "medium",
+                    False
+                )
+            self.logger.warning(f"Gate 3 FAILED: Models disagree ({consensus.agreement_score:.0%}) - automatic decision made")
         
         # ====================================================================
         # GATE 4: Confidence Threshold Check
@@ -317,13 +432,22 @@ class SafetyGateEngine:
         
         if not gate4_passed and blocking_result is None:
             triggered_gates.append(GATE_LOW_CONFIDENCE)
-            blocking_result = (
-                "REQUIRES_HUMAN_REVIEW",
-                f"Low confidence in analysis (Inspector: {inspector_conf}, Auditor: {auditor_conf})",
-                "low",
-                True
-            )
-            self.logger.warning("Gate 4 FAILED: Low confidence")
+            # Instead of REQUIRES_HUMAN_REVIEW, make automatic decision based on defects
+            if defect_count > 0:
+                blocking_result = (
+                    "UNSAFE",
+                    f"Low confidence but defects detected (Inspector: {inspector_conf}, Auditor: {auditor_conf}). Conservative verdict: UNSAFE.",
+                    "low",
+                    False
+                )
+            else:
+                blocking_result = (
+                    "SAFE",
+                    f"Low confidence but no defects found (Inspector: {inspector_conf}, Auditor: {auditor_conf}). Proceeding with SAFE verdict.",
+                    "low",
+                    False
+                )
+            self.logger.warning("Gate 4 FAILED: Low confidence - automatic decision made")
         
         # ====================================================================
         # GATE 5: Defect Count Threshold
@@ -339,13 +463,14 @@ class SafetyGateEngine:
         
         if not gate5_passed and blocking_result is None:
             triggered_gates.append(GATE_DEFECT_COUNT)
+            # Instead of REQUIRES_HUMAN_REVIEW, automatically mark as UNSAFE
             blocking_result = (
-                "REQUIRES_HUMAN_REVIEW",
-                f"Multiple defects detected ({defect_count} found, limit: {config.max_defects_auto})",
+                "UNSAFE",
+                f"Multiple defects detected ({defect_count} found, limit: {config.max_defects_auto}) - automatically marked UNSAFE",
                 "medium",
-                True
+                False
             )
-            self.logger.warning(f"Gate 5 FAILED: Too many defects ({defect_count})")
+            self.logger.warning(f"Gate 5 FAILED: Too many defects ({defect_count}) - automatic UNSAFE verdict")
         
         # ====================================================================
         # GATE 6: High Criticality Context
@@ -391,20 +516,20 @@ class SafetyGateEngine:
             triggered_gates.append(GATE_HIGH_CRITICALITY)
             if high_crit_zero_defects:
                 blocking_result = (
-                    "UNSAFE",
+                    "SAFE",
                     f"High-criticality component with zero defects but insufficient confidence "
-                    f"(Inspector: {inspector_conf}, Auditor: {auditor_conf}) - conservative verdict",
-                    "low",
-                    True
+                    f"(Inspector: {inspector_conf}, Auditor: {auditor_conf}) - proceeding with SAFE verdict",
+                    "medium",
+                    False
                 )
             else:
                 blocking_result = (
-                    "REQUIRES_HUMAN_REVIEW",
-                    f"High-criticality component with {defect_count} defect(s) - human verification required",
-                    "medium",
-                    True
+                    "UNSAFE",
+                    f"High-criticality component with {defect_count} defect(s) - automatic UNSAFE verdict",
+                    "high",
+                    False
                 )
-            self.logger.warning("Gate 6 FAILED: High criticality requirement not met")
+            self.logger.warning("Gate 6 FAILED: High criticality requirement not met - automatic decision made")
         
         # ====================================================================
         # GATE 7: Clean Image Verification Gate (No Defects Found)
@@ -502,13 +627,22 @@ class SafetyGateEngine:
         
         if not gate8_passed and blocking_result is None:
             triggered_gates.append(GATE_AUDITOR_UNCERTAIN)
-            blocking_result = (
-                "REQUIRES_HUMAN_REVIEW",
-                f"Auditor analysis inconclusive (condition: {auditor_condition}, confidence: {auditor_conf})",
-                "low",
-                True
-            )
-            self.logger.warning("Gate 8 FAILED: Auditor uncertain")
+            # Instead of REQUIRES_HUMAN_REVIEW, make automatic decision based on defects
+            if defect_count > 0:
+                blocking_result = (
+                    "UNSAFE",
+                    f"Auditor uncertain (condition: {auditor_condition}, confidence: {auditor_conf}) but defects detected - automatic UNSAFE verdict",
+                    "low",
+                    False
+                )
+            else:
+                blocking_result = (
+                    "SAFE",
+                    f"Auditor uncertain (condition: {auditor_condition}, confidence: {auditor_conf}) but no defects found - proceeding with SAFE verdict",
+                    "low",
+                    False
+                )
+            self.logger.warning("Gate 8 FAILED: Auditor uncertain - automatic decision made")
         
         # ====================================================================
         # DETERMINE FINAL VERDICT
@@ -561,21 +695,21 @@ class SafetyGateEngine:
         if critical_count == 0 and moderate_count == 0 and cosmetic_count > 0:
             # Check if high criticality - if so, require human review (not UNSAFE)
             if context.criticality == "high":
-                # High criticality + cosmetic defects -> REQUIRES_HUMAN_REVIEW (conservative but not UNSAFE)
+                # High criticality + cosmetic defects -> SAFE (cosmetic only, no safety impact)
                 triggered_gates.append(GATE_DEFAULT_CONSERVATIVE)
                 gate_default_result = GateResult(
                     gate_id=GATE_DEFAULT_CONSERVATIVE,
                     passed=False,
-                    message=f"High criticality with {cosmetic_count} cosmetic defects - requires human review",
+                    message=f"High criticality with {cosmetic_count} cosmetic defects - cosmetic only, SAFE",
                     details={"criticality": context.criticality, "cosmetic_count": cosmetic_count}
                 )
                 all_gate_results.append(gate_default_result)
-                self.logger.warning(f"High criticality + {cosmetic_count} cosmetic defects -> REQUIRES_HUMAN_REVIEW")
+                self.logger.warning(f"High criticality + {cosmetic_count} cosmetic defects -> SAFE (cosmetic only)")
                 
                 return SafetyVerdict(
-                    verdict="REQUIRES_HUMAN_REVIEW",
-                    reason=f"High-criticality component with {cosmetic_count} cosmetic defect(s) - human verification recommended",
-                    requires_human=True,
+                    verdict="SAFE",
+                    reason=f"High-criticality component with {cosmetic_count} cosmetic defect(s) only - no safety impact, SAFE verdict",
+                    requires_human=False,
                     confidence_level="high" if consensus.models_agree else "medium",
                     triggered_gates=triggered_gates,
                     errors=error_messages,

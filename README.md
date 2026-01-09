@@ -43,7 +43,7 @@ A production-ready AI system that performs **safety-critical visual inspection**
     ▼                ▼                ▼
 ┌─────────┐      ┌─────────┐      ┌─────────┐
 │Inspector│      │ Auditor │      │ Safety  │
-│ Qwen2-VL│      │Llama3.2 │      │ Gates   │
+│ Qwen2-VL│      │llama-4  │      │ Gates   │
 └────┬────┘      └────┬────┘      └────┬────┘
      │                │                │
      └────────┬───────┴────────────────┘
@@ -52,7 +52,7 @@ A production-ready AI system that performs **safety-critical visual inspection**
       │   Consensus    │
       └───────┬────────┘
               │
-        Agree?│ No → Human Review
+        Agree?│ No 
               │ Yes
               ▼
       ┌───────────────┐
@@ -66,7 +66,7 @@ A production-ready AI system that performs **safety-critical visual inspection**
 | Role | Model | Purpose |
 |------|-------|---------|
 | **Inspector** | Qwen2-VL-7B | Primary defect detection + reasoning |
-| **Auditor** | Llama 3.2 11B Vision | Independent verification |
+| **Auditor** | llama-4-maverick | Independent verification |
 | **Explainer** | Llama 3.1 8B | Natural language report generation |
 
 ---

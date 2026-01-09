@@ -350,19 +350,10 @@ def create_heatmap_overlay(
     
     height, width = img.shape[:2]
     
-    # Confidence filtering: Skip low-confidence defects unless criticality is high
-    confidence_levels = {"low": 1, "medium": 2, "high": 3}
-    threshold_level = confidence_levels.get(confidence_threshold, 1)
-    
-    filtered_defects = []
-    for defect in defects:
-        defect_confidence = defect.get("confidence", "medium")
-        defect_level = confidence_levels.get(defect_confidence, 2)
-        
-        if defect_level >= threshold_level or criticality == "high":
-            filtered_defects.append(defect)
-        else:
-            logger.debug(f"Skipping low-confidence defect in heatmap: {defect.get('type', 'unknown')}")
+    # Include ALL defects in heatmap - don't filter by confidence
+    # We want to show all detected defects, even if confidence is low
+    # The intensity will be adjusted based on confidence/severity
+    filtered_defects = defects
     
     # All coordinates are now PERCENTAGES (0-100) - no scaling needed
     # Note: actual_model_size parameter kept for backward compatibility but not used
@@ -379,17 +370,27 @@ def create_heatmap_overlay(
         defect_confidence = defect.get("confidence", "medium")
         
         # Determine heat intensity based on severity and confidence
+        # Make ALL defects visible, even small ones - adjust intensity but don't hide them
         severity_weight = {
             'CRITICAL': 1.0,
-            'MODERATE': 0.6,
-            'COSMETIC': 0.3,
-            'MINOR': 0.3
+            'MODERATE': 0.75,  # Increased from 0.6 to make moderate defects more visible
+            'COSMETIC': 0.5,   # Increased from 0.3 to make cosmetic defects visible
+            'MINOR': 0.5       # Increased from 0.3 to make minor defects visible
         }
-        base_intensity = severity_weight.get(severity, 0.5)
+        base_intensity = severity_weight.get(severity, 0.6)
         
-        # Multiply by confidence factor (high=1.0, medium=0.7, low=0.4)
-        confidence_factor = {"high": 1.0, "medium": 0.7, "low": 0.4}.get(defect_confidence, 0.5)
+        # Confidence factor: Still vary by confidence but ensure all defects are visible
+        # Reduced the gap between confidence levels so low-confidence defects are still visible
+        confidence_factor = {"high": 1.0, "medium": 0.75, "low": 0.55}.get(defect_confidence, 0.65)
         intensity = base_intensity * confidence_factor
+        
+        # Ensure minimum intensity for visibility - even small/low-confidence defects should be visible
+        min_intensity = 0.35  # Minimum intensity to ensure all defects are visible
+        intensity = max(intensity, min_intensity)
+        
+        # Boost intensity for high-confidence critical defects to make them stand out
+        if severity == 'CRITICAL' and defect_confidence == "high":
+            intensity = min(1.0, intensity * 1.2)  # Boost by 20% but cap at 1.0
         
         # Check for widespread defects (no bbox AND explicit widespread keywords)
         widespread_keywords = ["entire surface", "everywhere", "whole component", "complete surface"]
@@ -433,9 +434,9 @@ def create_heatmap_overlay(
                 logger.warning(f"Bbox exceeds bounds in heatmap: {bbox}")
                 continue
             
-            # Validate reasonableness
+            # Validate reasonableness - reduce minimum to include smaller defects (0.05% instead of 0.1%)
             area_percent = (raw_w * raw_h) / 100.0
-            if area_percent < 0.1 or area_percent > 50.0:
+            if area_percent < 0.05 or area_percent > 50.0:
                 logger.warning(f"Bbox unreasonable size in heatmap (area={area_percent:.2f}%), skipping: {bbox}")
                 continue
             
@@ -445,43 +446,152 @@ def create_heatmap_overlay(
             w = int((raw_w / 100.0) * width)
             h = int((raw_h / 100.0) * height)
             
-            # Clamp to image bounds
-            x = max(0, min(x, width - 1))
-            y = max(0, min(y, height - 1))
+            # Clamp to image bounds - but preserve as much of the bbox as possible for edge defects
+            # First, adjust position if bbox extends beyond bounds
+            if x < 0:
+                w += x  # Reduce width by the amount x is negative
+                x = 0
+            if y < 0:
+                h += y  # Reduce height by the amount y is negative
+                y = 0
+            
+            # Then, clamp width/height if they extend beyond bounds
             w = min(w, width - x)
             h = min(h, height - y)
             
             if w <= 0 or h <= 0:
+                logger.warning(f"Invalid bbox size after conversion: w={w}, h={h} for defect {defect.get('type')}")
                 continue
             
-            # Calculate center of defect
-            center_x = x + w // 2
-            center_y = y + h // 2
+            # Log bbox for debugging accuracy
+            logger.debug(f"Heatmap defect: {defect.get('type')} at bbox: ({raw_x:.1f}%, {raw_y:.1f}%) "
+                        f"size: ({raw_w:.1f}%, {raw_h:.1f}%) -> pixels: ({x},{y}) size: ({w},{h})")
             
-            # Calculate radius for Gaussian blob
-            radius = max(w, h)
+            # Calculate center of defect (bbox center) - use precise float calculation
+            center_x = float(x + w / 2.0)
+            center_y = float(y + h / 2.0)
             
-            # Create coordinate grids
-            y_coords, x_coords = np.ogrid[:height, :width]
+            # Calculate sigma for Gaussian based on bbox size
+            # Make sigma proportional to bbox dimensions for accurate highlighting
+            # Use the larger dimension as primary for circular blur that covers bbox well
+            sigma_x = (w / 2.0) * 1.8  # Increased from 1.6 to 1.8 for better edge coverage
+            sigma_y = (h / 2.0) * 1.8  # Increased from 1.6 to 1.8 for better edge coverage
             
-            # Calculate squared distance from center
-            dist_sq = (x_coords - center_x)**2 + (y_coords - center_y)**2
+            # Use the larger sigma for circular blur that ensures bbox is well covered
+            sigma = max(sigma_x, sigma_y)
             
-            # Calculate Gaussian intensity
-            sigma = radius * 0.8
-            gaussian = intensity * np.exp(-dist_sq / (2 * sigma**2))
+            # Ensure minimum sigma for small bboxes to have visible effect
+            # Increased minimum sigma for small defects to ensure they're visible in heatmap
+            min_sigma = max(w, h) * 0.6  # Increased from 0.5 to 0.6 for even better visibility and edge coverage
+            # Also ensure absolute minimum sigma (at least 20 pixels for very small defects - increased from 15)
+            absolute_min_sigma = 20
+            sigma = max(sigma, min_sigma, absolute_min_sigma)
             
-            # Only apply within 2.5x radius for efficiency
-            mask = dist_sq < (radius * 2.5)**2
-            heat_mask = np.where(mask, np.maximum(heat_mask, gaussian.astype(np.float32)), heat_mask)
+            # Limit sigma to prevent extremely large kernels (performance)
+            # Increased max sigma slightly to allow better coverage for larger defects near edges
+            max_sigma = min(width, height) * 0.15  # Increased from 12% to 15% for better edge coverage
+            sigma = min(sigma, max_sigma)
+            
+            logger.debug(f"Defect {defect.get('type')}: bbox center=({center_x:.1f},{center_y:.1f}), "
+                        f"bbox=({x},{y},{w},{h}), sigma={sigma:.1f}")
+            
+            # Create a temporary mask for this defect (only in relevant region for speed)
+            # Calculate bounding box for the blur region - extend generously to capture edges
+            # Use 4x sigma radius to ensure full coverage including edges and smooth falloff
+            blur_margin = int(4 * sigma) + 15  # Increased from 3x to 4x, and more padding for edge coverage
+            # Convert to int for slice indices (center_x and center_y are floats)
+            mask_x1 = int(max(0, center_x - blur_margin))
+            mask_y1 = int(max(0, center_y - blur_margin))
+            mask_x2 = int(min(width, center_x + blur_margin + 1))
+            mask_y2 = int(min(height, center_y + blur_margin + 1))
+            
+            # Ensure valid slice indices
+            if mask_x2 <= mask_x1 or mask_y2 <= mask_y1:
+                logger.warning(f"Invalid slice region for defect {defect.get('type')}: "
+                             f"({mask_x1},{mask_y1}) to ({mask_x2},{mask_y2})")
+                continue
+            
+            # Create coordinate grids only for the relevant region
+            local_y_coords, local_x_coords = np.ogrid[mask_y1:mask_y2, mask_x1:mask_x2]
+            
+            # Calculate distance from bbox center
+            local_dist_sq = (local_x_coords - center_x)**2 + (local_y_coords - center_y)**2
+            
+            # Create Gaussian heat with strong concentration at center, fading smoothly
+            # Use 2D Gaussian for smooth circular blur
+            base_gaussian = np.exp(-local_dist_sq / (2 * sigma**2))
+            gaussian_local = intensity * base_gaussian
+            
+            # Apply stronger heat inside the actual bbox region for accuracy
+            # Check which pixels are inside the bbox
+            in_bbox_x = (local_x_coords >= x) & (local_x_coords < (x + w))
+            in_bbox_y = (local_y_coords >= y) & (local_y_coords < (y + h))
+            in_bbox = in_bbox_x & in_bbox_y
+            
+            # Calculate distance from bbox center for stronger concentration
+            # Pixels inside bbox get much stronger intensity, outside fade smoothly
+            bbox_radius_x = w / 2.0
+            bbox_radius_y = h / 2.0
+            
+            # Create elliptical distance metric for bbox shape
+            dx = (local_x_coords - center_x) / max(bbox_radius_x, 1)
+            dy = (local_y_coords - center_y) / max(bbox_radius_y, 1)
+            bbox_dist_sq = dx**2 + dy**2
+            
+            # Strong boost inside bbox (within 1.2x bbox radius)
+            in_bbox_strong = bbox_dist_sq < 1.2**2
+            
+            # Very strong intensity for pixels inside bbox
+            boost_factor = np.where(in_bbox_strong, 1.8,  # 80% boost inside bbox
+                                  np.where(in_bbox, 1.4,   # 40% boost at bbox edges
+                                          1.0))            # No boost outside
+            
+            gaussian_local = np.minimum(1.0, gaussian_local * boost_factor)
+            
+            # Apply within 4x sigma radius for smooth falloff and to capture edges
+            # Increased from 3.5x to 4x to ensure defects at image edges are fully highlighted
+            local_mask = local_dist_sq < (4.0 * sigma)**2
+            defect_mask_local = np.where(local_mask, gaussian_local.astype(np.float32), 0)
+            
+            # Apply additional Gaussian blur for smooth transitions (true Gaussian blur effect)
+            # Use adaptive kernel size based on sigma
+            blur_kernel_sigma = sigma * 0.4  # Subtle blur for smoothness
+            kernel_size = min(int(2 * np.ceil(3 * blur_kernel_sigma) + 1), 51)  # Max 51x51 for speed
+            if kernel_size % 2 == 0:
+                kernel_size += 1
+            if kernel_size > 1 and defect_mask_local.size > 0:
+                defect_mask_local = cv2.GaussianBlur(defect_mask_local, (kernel_size, kernel_size), blur_kernel_sigma)
+            
+            # Combine with main heat mask (take maximum to preserve overlapping defects)
+            heat_mask[mask_y1:mask_y2, mask_x1:mask_x2] = np.maximum(
+                heat_mask[mask_y1:mask_y2, mask_x1:mask_x2],
+                defect_mask_local
+            )
 
     if not has_defects:
         # Just save original if no defects
         cv2.imwrite(str(output_path), img)
         return output_path
 
+    # Apply final subtle Gaussian blur to entire heat mask for smoother transitions
+    # This creates the true Gaussian blur effect like in the reference image
+    # Use a light blur kernel to smooth transitions between hot spots without losing detail
+    if heat_mask.max() > 0:
+        # Calculate adaptive kernel size - keep it subtle for performance
+        blur_sigma = min(width, height) * 0.01  # 1% of image dimension (light blur for speed)
+        # Limit kernel size to prevent slow processing (max 31x31 for final blur)
+        kernel_size = min(int(2 * np.ceil(3 * blur_sigma) + 1), 31)
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        if kernel_size > 1:
+            # Apply light blur to smooth transitions
+            heat_mask = cv2.GaussianBlur(heat_mask, (kernel_size, kernel_size), blur_sigma)
+    
     # Normalize heat mask to 0-255 for colormap
-    heat_mask_norm = (heat_mask * 255).astype(np.uint8)
+    if heat_mask.max() > 0:
+        heat_mask_norm = (heat_mask / heat_mask.max() * 255).astype(np.uint8)
+    else:
+        heat_mask_norm = (heat_mask * 255).astype(np.uint8)
     
     # Apply JET colormap (Classic thermal look: Blue -> Cyan -> Yellow -> Red)
     heatmap_color = cv2.applyColorMap(heat_mask_norm, cv2.COLORMAP_JET)

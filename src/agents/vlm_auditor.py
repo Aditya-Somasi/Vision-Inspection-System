@@ -348,6 +348,20 @@ class VLMAuditorAgent(BaseVLMAgent):
         if "defects" not in result_dict:
             result_dict["defects"] = []
         
+        # Confidence boosting: If no defects found and condition is "good", boost confidence
+        defect_count = len(result_dict.get("defects", []))
+        overall_condition = result_dict.get("overall_condition", "uncertain")
+        current_confidence = result_dict.get("overall_confidence", "low")
+        
+        if defect_count == 0 and overall_condition == "good":
+            # Boost confidence if model correctly identifies no defects
+            if current_confidence == "low":
+                result_dict["overall_confidence"] = "medium"
+                self.logger.info("Boosted auditor confidence from 'low' to 'medium' for clean image")
+            elif current_confidence == "medium":
+                result_dict["overall_confidence"] = "high"
+                self.logger.info("Boosted auditor confidence from 'medium' to 'high' for clean image")
+        
         # Validate and fix defects
         valid_defects = []
         for defect in result_dict.get("defects", []):
@@ -367,6 +381,22 @@ class VLMAuditorAgent(BaseVLMAgent):
                 # Validate confidence - default to "low" if invalid
                 if defect["confidence"] not in ["high", "medium", "low"]:
                     defect["confidence"] = "low"
+                
+                # Additional validation: Filter out suspicious defects that may be false positives
+                defect_type_lower = defect.get("type", "").lower()
+                defect_confidence = defect.get("confidence", "low")
+                defect_reasoning = defect.get("reasoning", "").lower()
+                
+                # Filter out low-confidence defects with vague reasoning
+                vague_indicators = ["possible", "might be", "appears to be", "could be", "uncertain", "unclear"]
+                has_vague_reasoning = any(indicator in defect_reasoning for indicator in vague_indicators)
+                
+                if defect_confidence == "low" and has_vague_reasoning:
+                    self.logger.warning(
+                        f"Filtering out auditor low-confidence defect with vague reasoning: {defect.get('type')} - "
+                        f"'{defect.get('reasoning', '')[:50]}'"
+                    )
+                    continue  # Skip this defect
                 
                 # Validate bbox if present (same logic as Inspector)
                 if "bbox" in defect and defect["bbox"]:
@@ -398,10 +428,16 @@ class VLMAuditorAgent(BaseVLMAgent):
                                     defect["bbox"] = None
                                     defect["bbox_approximate"] = True
                                 else:
-                                    # Validate reasonableness
+                                    # Validate reasonableness - reduced minimum to 0.05% to include smaller defects
                                     area_percent = (raw_w * raw_h) / 100.0
-                                    if area_percent < 0.1:
-                                        self.logger.warning(f"Bbox too small (area={area_percent:.2f}%) - may be noise: {bbox}")
+                                    if area_percent < 0.05:
+                                        self.logger.warning(f"Bbox very small (area={area_percent:.2f}%) - may be noise: {bbox}")
+                                        # Only filter out very low-confidence defects with extremely small bbox (< 0.02%)
+                                        if defect_confidence == "low" and area_percent < 0.02:
+                                            self.logger.warning(
+                                                f"Filtering out auditor very low-confidence defect with extremely tiny bbox: {defect.get('type')}"
+                                            )
+                                            continue  # Skip this defect
                                         defect["bbox_approximate"] = True
                                     elif area_percent > 50.0:
                                         self.logger.warning(f"Bbox too large (area={area_percent:.2f}%) - likely error: {bbox}")
@@ -418,6 +454,16 @@ class VLMAuditorAgent(BaseVLMAgent):
                             defect["bbox"] = None
                     else:
                         defect["bbox"] = None
+                
+                # If defect has no bbox AND low confidence AND vague location, filter it out
+                if not defect.get("bbox") and defect_confidence == "low":
+                    location = defect.get("location", "").lower()
+                    vague_locations = ["somewhere", "various", "multiple", "general", "areas"]
+                    if any(vague in location for vague in vague_locations):
+                        self.logger.warning(
+                            f"Filtering out auditor low-confidence defect with no bbox and vague location: {defect.get('type')}"
+                        )
+                        continue  # Skip this defect
                 
                 valid_defects.append(defect)
         

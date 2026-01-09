@@ -23,26 +23,53 @@ Example: {{"x": 25, "y": 30, "width": 10, "height": 8}} means 25% from left, 30%
 CONTEXT: Criticality={criticality}, Domain={domain}, Notes={user_notes}
 
 TASK:
-1. Identify the object/component
-2. Detect ALL visible defects (including tiny ones)
-3. For each defect, provide:
-   - Type (structural: cracks/fractures, surface: scratches/dents, material: corrosion/wear)
-   - Location description
+1. Identify the object/component being inspected
+2. Systematically examine the ENTIRE image for ALL visible defects, damage, abnormalities, or deviations from expected condition
+   - Look comprehensively: structural issues, surface damage, material degradation, contamination, functional defects
+   - Check all components, surfaces, connections, and critical areas
+   - Pay attention to both obvious major issues AND subtle minor defects
+   - Consider the context: what would make this item unsafe, non-functional, or degraded?
+3. For each defect found, provide:
+   - Type (describe the specific defect type - e.g., crack, fracture, wear, corrosion, discoloration, deformation, contamination, etc.)
+   - Location description (be specific and precise about where the defect is located)
    - Bounding box: {{"x": 0-100, "y": 0-100, "width": 0-100, "height": 0-100}} - ALL PERCENTAGES
-   - Safety impact: CRITICAL, MODERATE, or COSMETIC
-   - Reasoning (brief, 1-2 sentences)
+   - Safety impact: CRITICAL, MODERATE, or COSMETIC (assess based on potential consequences)
+   - Reasoning (brief, 1-2 sentences explaining WHY this is a defect and its implications)
    - Confidence: high, medium, or low
    - Recommended action
 
-SAFETY IMPACT:
-- CRITICAL: Could cause injury/death/failure
-- MODERATE: Affects function/durability
-- COSMETIC: Visual only, no safety impact
+CRITICAL: Report ALL defects you find, regardless of size or severity. Small defects are still important and must be documented and highlighted. Do NOT skip any visible issues.
 
-RULES:
-- If unsure about severity, mark as CRITICAL or MODERATE (be conservative)
-- If image unclear or poor quality, mark confidence as "low"
-- For tiny defects, use small percentages (e.g., width: 2, height: 2)
+ACCURACY RULES:
+- Report ONLY defects you can CLEARLY see and verify - do NOT hallucinate
+- Distinguish between real defects and normal features (seams, reflections, shadows, manufacturing marks, natural variations)
+- Examine all parts of the image systematically - don't focus only on obvious areas
+- Consider the full context: structural integrity, functionality, cleanliness, completeness, proper assembly
+- If component looks perfect, say so with HIGH confidence: {{"overall_condition": "good", "overall_confidence": "high"}}
+- If image quality is excellent and you see no defects, use HIGH confidence
+- If uncertain whether something is a defect, mark confidence as "medium" or "low" but still report it
+- Report ALL defects regardless of size - small defects are still important and must be highlighted
+- Be thorough: check all visible surfaces, edges, connections, and critical areas
+
+SAFETY IMPACT:
+- CRITICAL: Could cause injury/death/failure (cracks, fractures, structural failure points)
+- MODERATE: Affects function/durability (wear, corrosion, minor damage)
+- COSMETIC: Visual only, no safety impact (scratches, discoloration without structural impact)
+
+CONFIDENCE GUIDELINES:
+- HIGH: Clear image quality, defect is obvious and unambiguous, no doubt about its existence
+- MEDIUM: Defect visible but borderline, slight uncertainty, or moderate image quality
+- LOW: Unclear image, uncertain if it's a defect vs artifact, or very subtle/ambiguous feature
+- When NO defects found AND image quality is good: Use HIGH confidence
+
+BOUNDING BOX RULES:
+- Must tightly enclose ONLY the damaged/defective area
+- Do NOT include surrounding good material
+- Use appropriately sized percentages for the defect (small defects = small boxes, large defects = large boxes)
+- Even tiny defects should have bounding boxes - use precise coordinates
+- Must be within image bounds (x + width ≤ 100, y + height ≤ 100)
+- For widespread issues covering multiple areas, use boxes that encompass each affected region
+- Multiple small defects in different locations should have separate bounding boxes
 
 Keep response concise. Target: 400-500 tokens for JSON, 100-150 tokens for analysis_reasoning.
 
@@ -65,7 +92,7 @@ Return ONLY valid JSON (no other text):
   "analysis_reasoning": "2-3 sentence summary of findings"
 }}
 
-If NO defects found, return empty defects array with analysis_reasoning explaining why component appears safe."""
+If NO defects found, return empty defects array with analysis_reasoning explaining why component appears safe. Use HIGH confidence if image quality is good and component looks perfect."""
 
 # ============================================================================
 # AUDITOR PROMPT (Llama 3.2 Vision)
@@ -82,25 +109,48 @@ YOUR TASK:
 Perform INDEPENDENT analysis. Form your own opinion - do not simply agree with Inspector.
 
 VERIFICATION STRATEGY:
-- If Inspector found NO defects: Perform thorough independent check (look carefully for subtle issues)
-- If Inspector found defects: Verify those findings are accurate (confirm or correct)
+- Perform thorough independent check - form your own opinion based on the image
+- Systematically examine the image for ALL types of defects, damage, or abnormalities
+- Consider all aspects: structural integrity, surface condition, material state, functionality, cleanliness, completeness
+- If Inspector found NO defects: Double-check carefully across the entire image, but ONLY report defects you are CERTAIN about
+- If Inspector found defects: Verify those findings are accurate (confirm, correct, or reject based on your independent assessment)
+- Remember: Finding NO defects is a VALID and important result - use HIGH confidence if image quality is good and item appears in good condition
+- Report ALL visible defects, including small ones - comprehensive detection is critical for safety and quality assessment
+
+ACCURACY IS CRITICAL:
+- Report ONLY defects you can CLEARLY see and verify with HIGH confidence
+- Distinguish between real defects and normal features:
+  * For tools/hammers: Do NOT confuse the natural junction where head meets handle with a crack
+  * Do NOT confuse reflections, shadows, or light variations with cracks or damage
+  * Do NOT confuse normal manufacturing seams, tooling marks, or surface textures with defects
+  * Shiny metal surfaces often have reflections that look like cracks - these are NOT defects
+  * The junction where metal meets handle is a normal feature, NOT a crack
+- "No defects" is VALID - if component looks perfect, say so with HIGH confidence
+- When uncertain, mark confidence as "low" - do NOT invent defects
+- Do NOT hallucinate defects - only report what you can CLEARLY see and verify
+- Only report defects you would stake your reputation on
+- False positives are dangerous and waste resources - prefer missing a subtle defect over inventing one
+- If Inspector found NO defects with HIGH confidence, be EXTRA careful - they may be correct
 
 REPORTING RULES:
-- Report ONLY defects you can CLEARLY see and verify
-- "No defects" is VALID - if component looks good, say so with confidence
-- When uncertain, mark confidence as "low" - do NOT invent defects
-- Only report defects you would stake your reputation on
+- HIGH confidence: Defect is obvious, unambiguous, and clearly visible
+- MEDIUM confidence: Defect visible but borderline, some uncertainty
+- LOW confidence: Unclear if it's a defect, or very subtle/ambiguous feature
+- When NO defects found AND image quality is good: Use HIGH confidence with {{"overall_condition": "good"}}
 
 BOUNDING BOXES:
 - Use PERCENTAGES (0-100) for all coordinates
 - x = % from left edge, y = % from top edge
 - width/height = % of image dimensions
-- Box must TIGHTLY enclose only the damaged area
+- Box must TIGHTLY enclose only the damaged/defective area
+- Do NOT include surrounding good material
+- Must be within image bounds (x + width ≤ 100, y + height ≤ 100)
 
 CONSERVATIVE APPROACH:
-- For high criticality, be extra thorough
-- If uncertain, mark confidence as "low"
-- For safety-critical domains, assume higher risk
+- For high criticality, be extra thorough but do NOT invent defects
+- If uncertain, mark confidence as "low" - this triggers human review
+- For safety-critical domains, be conservative but accurate
+- Better to flag uncertainty than to create false alarms
 
 Keep response concise. Target: 400-500 tokens.
 

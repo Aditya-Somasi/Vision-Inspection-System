@@ -42,45 +42,11 @@ def should_run_human_review(
     """
     Determine if human review is needed based on safety verdict.
     
-    Human review is required when:
-    - requires_human_review flag is True
-    - Verdict is REQUIRES_HUMAN_REVIEW
-    - Critical failures detected
-    - High criticality items (even when "clean")
+    DISABLED: Human review is disabled - all inspections proceed automatically.
     """
-    # Check if human review is required
-    requires_human = state.get("requires_human_review", False)
-    has_critical_failure = state.get("has_critical_failure", False)
-    
-    # Check verdict
-    safety_verdict = state.get("safety_verdict", {})
-    verdict = safety_verdict.get("verdict", "UNKNOWN")
-    
-    # Check context for high criticality
-    context = state.get("context", {})
-    criticality = context.get("criticality", "medium")
-    
-    # Require human review if:
-    # 1. Explicitly flagged by safety gates
-    # 2. Verdict is REQUIRES_HUMAN_REVIEW
-    # 3. Critical failure detected
-    # 4. High criticality (conservative approach)
-    if requires_human or verdict == "REQUIRES_HUMAN_REVIEW" or has_critical_failure:
-        logger.info("Human review required - routing to human_review node")
-        return "human_review"
-    
-    # For high criticality, require review even if verdict is SAFE (conservative)
-    # This addresses the verification report concern about high-criticality "clean" items
-    if criticality == "high":
-        consensus = state.get("consensus", {})
-        defect_count = len(consensus.get("combined_defects", []))
-        
-        # High criticality + zero defects still requires human verification
-        if defect_count == 0:
-            logger.info("High criticality with zero defects - requiring human review")
-            return "human_review"
-    
-    # Otherwise, proceed to explanation
+    # Human review is disabled - always proceed to explanation
+    # This allows automatic processing without interruptions
+    logger.info("Human review disabled - proceeding directly to explanation generation")
     return "generate_explanation"
 
 

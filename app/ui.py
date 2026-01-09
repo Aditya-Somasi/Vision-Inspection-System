@@ -632,32 +632,61 @@ def inspection_session_page():
 
 
 def render_upload_configure_tab():
-    """TAB 1: Upload & Configure - Multi-image upload and session configuration."""
+    """TAB 1: Upload & Configure - Single image upload and configuration."""
     st.header("📤 Upload & Configure")
     
-    # Multi-image upload zone
+    # Single image upload zone
     uploaded_files = render_multi_image_upload_zone()
     
-    # Batch configuration form
+    # Get current uploaded images from state
+    uploaded_images = get_state("uploaded_images", [])
+    
+    # For single image mode: If a new file is selected, clear old images
+    # Check if uploaded_files changed by comparing with current state
+    if uploaded_files and len(uploaded_files) == 1:
+        current_file_name = uploaded_files[0].name
+        # If this is a different file than what's in state, clear old images
+        if uploaded_images:
+            existing_file_names = [img.get("filename") for img in uploaded_images]
+            if current_file_name not in existing_file_names:
+                # New file selected - clear old images
+                set_state("uploaded_images", [])
+                set_state("image_results", {})
+                set_state("session_results", {})
+                uploaded_images = []
+    
+    # Ensure only one image is uploaded
+    if uploaded_files and len(uploaded_files) > 1:
+        st.warning("⚠️ Only single image upload is supported. Please upload one image at a time.")
+        uploaded_files = [uploaded_files[0]]  # Keep only first image
+    
+    # Configuration form
     metadata = render_batch_config_form()
     
-    # Process uploaded files button
-    if uploaded_files:
+    # Process uploaded file button (single image)
+    if uploaded_files and len(uploaded_files) == 1:
         st.divider()
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
-            if st.button("📥 Process Uploaded Files", type="primary", width='stretch'):
+            if st.button("📥 Process Image", type="primary", width='stretch'):
                 process_uploaded_files(uploaded_files, metadata)
-                st.success(f"✅ Processed {len(uploaded_files)} file(s)")
+                st.success(f"✅ Processed image: {uploaded_files[0].name}")
                 st.rerun()
     
     # Image preview gallery
     st.divider()
     render_image_preview_gallery()
     
-    # Start Inspection button (if images uploaded)
+    # Start Inspection button (if image uploaded)
     uploaded_images = get_state("uploaded_images", [])
-    if uploaded_images:
+    # Limit to single image - keep only the most recent one
+    if len(uploaded_images) > 1:
+        st.warning("⚠️ Only single image inspection is supported. Keeping only the most recent image.")
+        # Keep only the most recent image (last one)
+        uploaded_images = [uploaded_images[-1]]
+        set_state("uploaded_images", uploaded_images)
+    
+    if uploaded_images and len(uploaded_images) == 1:
         st.divider()
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
@@ -681,45 +710,74 @@ def render_upload_configure_tab():
                 image_path_to_id = {img["filepath"]: img["image_id"] for img in uploaded_images}
                 image_paths = list(image_path_to_id.keys())
                 
-                # Run multi-image inspection
-                with st.spinner(f"🔄 Processing {len(image_paths)} image(s)..."):
+                # Run single image inspection (multi-image disabled)
+                if len(image_paths) > 1:
+                    st.error("❌ Only single image inspection is supported. Please process one image at a time.")
+                    st.stop()
+                
+                with st.spinner(f"🔄 Processing image..."):
                     try:
-                        # Update all to processing
-                        for img in uploaded_images:
-                            img["status"] = "processing"
+                        # Update to processing (single image)
+                        uploaded_images[0]["status"] = "processing"
                         set_state("uploaded_images", uploaded_images)
                         
-                        # Pass image_id_map to preserve original IDs
-                        results = run_multi_image_inspection(
-                            image_paths=image_paths,
+                        # Run single image inspection directly
+                        from src.orchestration.graph import run_inspection
+                        result = run_inspection(
+                            image_path=image_paths[0],
                             criticality=criticality,
                             domain=domain,
-                            user_notes=user_notes,
-                            session_id=session_id,
-                            image_id_map=image_path_to_id
+                            user_notes=user_notes
                         )
                         
-                        # Map results back to uploaded_images
+                        # Wrap in results format for compatibility
+                        image_id = list(image_path_to_id.values())[0]
+                        image_results = {
+                            image_id: {
+                                "image_path": image_paths[0],
+                                "inspector_result": result.get("inspector_result"),
+                                "auditor_result": result.get("auditor_result"),
+                                "consensus": result.get("consensus"),
+                                "safety_verdict": result.get("safety_verdict"),
+                                "clean_verification": result.get("clean_verification"),
+                                "explanation": result.get("explanation"),
+                                "decision_support": result.get("decision_support", {}),
+                                "report_path": result.get("report_path"),
+                                "processing_time": result.get("processing_time", 0),
+                                "error": result.get("error"),
+                                "failure_history": result.get("failure_history", []),
+                                "completed": True
+                            }
+                        }
+                        
+                        # Properly aggregate session results using aggregation function
+                        from src.orchestration.session_aggregation import aggregate_session_results
+                        session_results = aggregate_session_results(image_results)
+                        
+                        results = {
+                            "image_results": image_results,
+                            "session_results": session_results
+                        }
+                        
+                        # Map results back to uploaded_images (single image)
                         image_results_dict = results.get("image_results", {})
                         
-                        # Update uploaded_images with results
-                        for img in uploaded_images:
-                            img_id = img["image_id"]
+                        # Update uploaded image with result
+                        if uploaded_images and len(uploaded_images) > 0:
+                            img_id = uploaded_images[0]["image_id"]
                             if img_id in image_results_dict:
                                 result = image_results_dict[img_id]
-                                img["inspection_result"] = result
-                                img["status"] = "complete" if result.get("completed") else "failed"
+                                uploaded_images[0]["inspection_result"] = result
+                                uploaded_images[0]["status"] = "complete" if result.get("completed") else "failed"
                                 if result.get("error"):
-                                    img["error"] = result.get("error")
+                                    uploaded_images[0]["error"] = result.get("error")
                         
                         set_state("uploaded_images", uploaded_images)
                         set_state("image_results", image_results_dict)
                         set_state("session_results", results.get("session_results", {}))
-                        
-                        set_state("uploaded_images", uploaded_images)
                         set_state("session_status", "complete")
                         
-                        st.success(f"✅ Inspection complete! Processed {results['session_results']['completed_images']}/{len(image_paths)} images")
+                        st.success(f"✅ Inspection complete!")
                         
                         # Switch to results tab
                         set_state("active_tab", "results")

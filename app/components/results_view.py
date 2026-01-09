@@ -162,13 +162,20 @@ def render_image_verdict_card(image_id: str, image_info: Dict[str, Any], results
                     boxes = []
                     for i, defect in enumerate(defects, 1):
                         bbox = defect.get("bbox", {})
+                        # Ensure bbox values are not None and are valid
+                        bbox_x = bbox.get("x") if bbox else None
+                        bbox_y = bbox.get("y") if bbox else None
+                        bbox_w = bbox.get("width") if bbox else None
+                        bbox_h = bbox.get("height") if bbox else None
+                        
                         boxes.append({
-                            "x": bbox.get("x", 50 + i*30),
-                            "y": bbox.get("y", 50 + i*30),
-                            "width": bbox.get("width", 50),
-                            "height": bbox.get("height", 50),
+                            "x": bbox_x if bbox_x is not None else (50 + i*30),
+                            "y": bbox_y if bbox_y is not None else (50 + i*30),
+                            "width": bbox_w if bbox_w is not None else 50,
+                            "height": bbox_h if bbox_h is not None else 50,
                             "label": f"#{i}",
-                            "severity": defect.get("safety_impact", "MODERATE")
+                            "severity": defect.get("safety_impact", "MODERATE"),
+                            "confidence": defect.get("confidence", "medium")
                         })
                     draw_bounding_boxes(image_path, boxes, annotated_path)
                 
