@@ -14,6 +14,11 @@ from app.components.verdict_display import (
 )
 from app.components.decision_support import render_decision_support
 from app.services.session_manager import get_state
+from utils.logger import setup_logger
+from utils.config import config
+
+logger = setup_logger(__name__, level=config.log_level, component="RESULTS_VIEW")
+
 
 
 def render_image_verdict_card(image_id: str, image_info: Dict[str, Any], results: Optional[Dict[str, Any]] = None):
@@ -143,8 +148,13 @@ def render_image_verdict_card(image_id: str, image_info: Dict[str, Any], results
                 
                 # Create heatmap overlay
                 heatmap_path = REPORT_DIR / f"heatmap_{image_path.stem}.jpg"
+                logger.info(f"DEBUG: [Results View] Heatmap path: {heatmap_path}, exists: {heatmap_path.exists()}")
                 if not heatmap_path.exists():
+                    logger.info(f"DEBUG: [Results View] Creating heatmap for {len(defects)} defects")
                     create_heatmap_overlay(image_path, defects, heatmap_path)
+                    logger.info(f"DEBUG: [Results View] Heatmap created, exists now: {heatmap_path.exists()}")
+                else:
+                    logger.info(f"DEBUG: [Results View] Using existing heatmap file")
                 
                 # Create annotated image with numbered markers
                 annotated_path = REPORT_DIR / f"annotated_{image_path.stem}.jpg"
@@ -202,7 +212,9 @@ def render_image_verdict_card(image_id: str, image_info: Dict[str, Any], results
         
         # PDF Report Section
         report_path = results.get("report_path")
+        logger.info(f"DEBUG: [Results View] Image {image_id} - report_path: {report_path}")
         if report_path and Path(report_path).exists():
+            logger.info(f"DEBUG: [Results View] PDF exists at: {Path(report_path).absolute()}")
             st.divider()
             st.subheader("📄 Inspection Report")
             
@@ -239,6 +251,27 @@ def render_image_verdict_card(image_id: str, image_info: Dict[str, Any], results
                     ''',
                     unsafe_allow_html=True
                 )
+            
+            st.caption(f"📁 {Path(report_path).name}")
+            st.caption(f"📍 {Path(report_path).absolute()}")
+            
+            # PDF Preview - Use download button for best cross-browser experience
+            st.divider()
+            st.info("💡 **Tip**: Use the '📥 Download PDF Report' button above to view the full report. PDF preview in browsers can be limited by security restrictions.")
+            
+            # Alternative: Try simple embed (works in some browsers)
+            st.subheader("👁️ Quick PDF Preview")
+            
+            try:
+                with open(report_path, "rb") as f:
+                    base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+                
+                # Simple embed tag (works better than iframe for some browsers)
+                pdf_embed = f'<embed src="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="600px" />'
+                st.markdown(pdf_embed, unsafe_allow_html=True)
+                st.caption("If preview doesn't display, please use the Download button above.")
+            except Exception as e:
+                st.warning(f"PDF preview unavailable. Please download the PDF to view it. ({str(e)[:100]})")
 
 
 def render_session_summary():

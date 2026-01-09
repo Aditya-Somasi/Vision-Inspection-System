@@ -217,11 +217,17 @@ def display_inspection_results(results: Dict[str, Any]):
             
             # Create heatmap overlay
             heatmap_path = REPORT_DIR / f"heatmap_{image_path.stem}.jpg"
+            logger.info(f"DEBUG: Heatmap path: {heatmap_path}, exists: {heatmap_path.exists()}")
             if not heatmap_path.exists():
+                logger.info(f"DEBUG: Creating heatmap for {len(defects)} defects")
                 create_heatmap_overlay(image_path, defects, heatmap_path)
+                logger.info(f"DEBUG: Heatmap created, exists now: {heatmap_path.exists()}")
+            else:
+                logger.info(f"DEBUG: Using existing heatmap file")
             
             # Create annotated image with numbered markers
             annotated_path = REPORT_DIR / f"annotated_{image_path.stem}.jpg"
+            logger.info(f"DEBUG: Annotated path: {annotated_path}, exists: {annotated_path.exists()}")
             if defects and not annotated_path.exists():
                 boxes = []
                 for i, defect in enumerate(defects, 1):
@@ -387,11 +393,14 @@ def display_inspection_results(results: Dict[str, Any]):
         st.dataframe(comparison_df, hide_index=True)
     
     # PDF Report Section with Preview
+    logger.info(f"DEBUG: Checking for report_path in results. Has report_path: {bool(results.get('report_path'))}")
     if results.get("report_path"):
+        logger.info(f"DEBUG: report_path found: {results['report_path']}")
         st.divider()
         st.subheader("📄 Inspection Report")
         
         report_path = Path(results["report_path"])
+        logger.info(f"DEBUG: PDF file exists: {report_path.exists()}, path: {report_path.absolute()}")
         
         # Action buttons
         col1, col2 = st.columns([1, 1])
@@ -435,15 +444,23 @@ def display_inspection_results(results: Dict[str, Any]):
         st.caption(f"📁 {report_path.name}")
         st.caption(f"📍 {report_path.absolute()}")
             
-        # Embedded PDF Viewer
+        # PDF Preview - Use download button for best cross-browser experience
         st.divider()
-        st.subheader("👁️ Live PDF Preview")
+        st.info("💡 **Tip**: Use the '📥 Download PDF Report' button above to view the full report. PDF preview in browsers can be limited by security restrictions.")
         
-        with open(report_path, "rb") as f:
-            base64_pdf = base64.b64encode(f.read()).decode('utf-8')
+        # Alternative: Try simple embed (works in some browsers)
+        st.subheader("👁️ Quick PDF Preview")
+        
+        try:
+            with open(report_path, "rb") as f:
+                base64_pdf = base64.b64encode(f.read()).decode('utf-8')
             
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
+            # Simple embed tag (works better than iframe for some browsers)
+            pdf_embed = f'<embed src="data:application/pdf;base64,{base64_pdf}" type="application/pdf" width="100%" height="600px" />'
+            st.markdown(pdf_embed, unsafe_allow_html=True)
+            st.caption("If preview doesn't display, please use the Download button above.")
+        except Exception as e:
+            st.warning(f"PDF preview unavailable. Please download the PDF to view it. ({str(e)[:100]})")
 
 
 # ============================================================================
