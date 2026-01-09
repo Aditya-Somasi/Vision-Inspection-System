@@ -434,7 +434,7 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 - [HuggingFace](https://huggingface.co/) for model APIs
 - [Streamlit](https://streamlit.io/) for UI framework
 - [Qwen Team](https://github.com/QwenLM) for Qwen2-VL
-- [Meta AI](https://ai.meta.com/) for Llama 3.2 Vision
+- [Meta AI](https://ai.meta.com/) for llama-4-maverick
 
 ---
 
