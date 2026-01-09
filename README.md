@@ -182,7 +182,7 @@ Agent: "No, this component is UNSAFE. The rust indicates metal degradation..."
 |----------|----------|---------|-------------|
 | `HUGGINGFACE_API_KEY` | ✅ Yes | - | HuggingFace API token |
 | `VLM_INSPECTOR_MODEL` | No | Qwen2-VL-7B | Primary inspection model |
-| `VLM_AUDITOR_MODEL` | No | Llama-3.2-11B | Verification model |
+| `VLM_AUDITOR_MODEL` | No |llama-4-maverick | Verification model |
 | `EXPLAINER_MODEL` | No | Llama-3.1-8B | Report generation model |
 | `CONFIDENCE_THRESHOLD` | No | 0.7 | Minimum confidence for auto-approval |
 | `MAX_DEFECTS_AUTO` | No | 2 | Max defects before human review |
