@@ -24,52 +24,56 @@ CONTEXT: Criticality={criticality}, Domain={domain}, Notes={user_notes}
 
 TASK:
 1. Identify the object/component being inspected
-2. Systematically examine the ENTIRE image for ALL visible defects, damage, abnormalities, or deviations from expected condition
-   - Look comprehensively: structural issues, surface damage, material degradation, contamination, functional defects
-   - Check all components, surfaces, connections, and critical areas
-   - Pay attention to both obvious major issues AND subtle minor defects
-   - Consider the context: what would make this item unsafe, non-functional, or degraded?
-3. For each defect found, provide:
-   - Type (describe the specific defect type - e.g., crack, fracture, wear, corrosion, discoloration, deformation, contamination, etc.)
-   - Location description (be specific and precise about where the defect is located)
-   - Bounding box: {{"x": 0-100, "y": 0-100, "width": 0-100, "height": 0-100}} - ALL PERCENTAGES
-   - Safety impact: CRITICAL, MODERATE, or COSMETIC (assess based on potential consequences)
-   - Reasoning (brief, 1-2 sentences explaining WHY this is a defect and its implications)
+2. Examine the ENTIRE image like a human expert would - see EVERYTHING visible:
+
+   THINK LIKE A HUMAN INSPECTOR:
+   - What is the PRIMARY damage or defect on this object?
+   - Did that damage CAUSE any secondary effects? (debris, contamination, spread)
+   - Are there fragments, pieces, or residue that fell/spread to OTHER parts?
+   - What would a careful human notice that a quick glance might miss?
+   
+   DETECTION CATEGORIES:
+   A) PRIMARY DEFECTS: Direct damage on the main component
+      (cracks, dents, corrosion, burns, breaks, missing parts, wear, etc.)
+   
+   B) SECONDARY EFFECTS: Consequences of the primary damage
+      (debris/fragments on other surfaces, contamination spread, staining, residue)
+   
+   C) COLLATERAL DAMAGE: Other parts affected by the primary issue
+      (adjacent components hit by debris, areas contaminated by spills/leaks)
+
+3. For EACH issue found (primary AND secondary), provide:
+   - Type (describe specifically what you see)
+   - Location (be precise about where it is)
+   - Bounding box: {{"x": 0-100, "y": 0-100, "width": 0-100, "height": 0-100}} - PERCENTAGES
+   - Safety impact: CRITICAL, MODERATE, or COSMETIC
+   - Reasoning (why is this a problem?)
    - Confidence: high, medium, or low
    - Recommended action
 
-CRITICAL: Report ALL defects you find, regardless of size or severity. Small defects are still important and must be documented and highlighted. Do NOT skip any visible issues.
+COMPREHENSIVE DETECTION RULE:
+A human reviewer looking at this image should NOT be able to find ANY visible issue that you missed.
+- If something broke, look for where the pieces went
+- If something leaked, trace where it spread
+- If something burned, check for soot/residue on nearby areas
+- Report EVERY visible problem, no matter how small
 
-ACCURACY RULES:
-- Report ONLY defects you can CLEARLY see and verify - do NOT hallucinate
-- Distinguish between real defects and normal features (seams, reflections, shadows, manufacturing marks, natural variations)
-- Examine all parts of the image systematically - don't focus only on obvious areas
-- Consider the full context: structural integrity, functionality, cleanliness, completeness, proper assembly
-- If component looks perfect, say so with HIGH confidence: {{"overall_condition": "good", "overall_confidence": "high"}}
-- If image quality is excellent and you see no defects, use HIGH confidence
-- If uncertain whether something is a defect, mark confidence as "medium" or "low" but still report it
-- Report ALL defects regardless of size - small defects are still important and must be highlighted
-- Be thorough: check all visible surfaces, edges, connections, and critical areas
+ACCURACY:
+- Report ONLY what you can CLEARLY see - do NOT hallucinate
+- Normal features (seams, reflections, shadows, textures) are NOT defects
+- If component looks perfect, say so with HIGH confidence
+- If uncertain, mark confidence as "low" but still report it
+
+BOUNDING BOXES:
+- Large damage = large box covering the entire affected area
+- Small debris/spots = smaller targeted boxes
+- Create SEPARATE boxes for issues on DIFFERENT parts of the object
+- Must be within bounds (x + width ≤ 100, y + height ≤ 100)
 
 SAFETY IMPACT:
-- CRITICAL: Could cause injury/death/failure (cracks, fractures, structural failure points)
-- MODERATE: Affects function/durability (wear, corrosion, minor damage)
-- COSMETIC: Visual only, no safety impact (scratches, discoloration without structural impact)
-
-CONFIDENCE GUIDELINES:
-- HIGH: Clear image quality, defect is obvious and unambiguous, no doubt about its existence
-- MEDIUM: Defect visible but borderline, slight uncertainty, or moderate image quality
-- LOW: Unclear image, uncertain if it's a defect vs artifact, or very subtle/ambiguous feature
-- When NO defects found AND image quality is good: Use HIGH confidence
-
-BOUNDING BOX RULES:
-- Must tightly enclose ONLY the damaged/defective area
-- Do NOT include surrounding good material
-- Use appropriately sized percentages for the defect (small defects = small boxes, large defects = large boxes)
-- Even tiny defects should have bounding boxes - use precise coordinates
-- Must be within image bounds (x + width ≤ 100, y + height ≤ 100)
-- For widespread issues covering multiple areas, use boxes that encompass each affected region
-- Multiple small defects in different locations should have separate bounding boxes
+- CRITICAL: Could cause injury, failure, or major malfunction
+- MODERATE: Affects function or durability
+- COSMETIC: Visual only, no safety/function impact
 
 Keep response concise. Target: 400-500 tokens for JSON, 100-150 tokens for analysis_reasoning.
 
@@ -109,49 +113,34 @@ CONTEXT: Criticality={criticality}, Domain={domain}
 YOUR TASK:
 Perform INDEPENDENT analysis. Form your own opinion - do not simply agree with Inspector.
 
+THINK LIKE A HUMAN INSPECTOR:
+- What is the PRIMARY damage or defect on this object?
+- Did that damage CAUSE any secondary effects? (debris, contamination, spread)
+- Are there fragments, pieces, or residue that fell/spread to OTHER parts?
+- What would a careful human notice that a quick glance might miss?
+
+DETECTION CATEGORIES:
+A) PRIMARY DEFECTS: Direct damage on the main component
+B) SECONDARY EFFECTS: Consequences of the primary damage (debris, contamination, staining)
+C) COLLATERAL DAMAGE: Other parts affected by the primary issue
+
 VERIFICATION STRATEGY:
-- Perform thorough independent check - form your own opinion based on the image
-- Systematically examine the image for ALL types of defects, damage, or abnormalities
-- Consider all aspects: structural integrity, surface condition, material state, functionality, cleanliness, completeness
-- If Inspector found NO defects: Double-check carefully across the entire image, but ONLY report defects you are CERTAIN about
-- If Inspector found defects: Verify those findings are accurate (confirm, correct, or reject based on your independent assessment)
-- Remember: Finding NO defects is a VALID and important result - use HIGH confidence if image quality is good and item appears in good condition
-- Report ALL visible defects, including small ones - comprehensive detection is critical for safety and quality assessment
+- Look at EVERY part of the image - not just the obvious damage
+- A human reviewer should NOT find anything you missed
+- Report ALL visible issues including secondary effects
+- Verify Inspector's findings AND look for things they might have missed
 
 ACCURACY IS CRITICAL:
-- Report ONLY defects you can CLEARLY see and verify with HIGH confidence
-- Distinguish between real defects and normal features:
-  * For tools/hammers: Do NOT confuse the natural junction where head meets handle with a crack
-  * Do NOT confuse reflections, shadows, or light variations with cracks or damage
-  * Do NOT confuse normal manufacturing seams, tooling marks, or surface textures with defects
-  * Shiny metal surfaces often have reflections that look like cracks - these are NOT defects
-  * The junction where metal meets handle is a normal feature, NOT a crack
-- "No defects" is VALID - if component looks perfect, say so with HIGH confidence
-- When uncertain, mark confidence as "low" - do NOT invent defects
-- Do NOT hallucinate defects - only report what you can CLEARLY see and verify
-- Only report defects you would stake your reputation on
-- False positives are dangerous and waste resources - prefer missing a subtle defect over inventing one
-- If Inspector found NO defects with HIGH confidence, be EXTRA careful - they may be correct
-
-REPORTING RULES:
-- HIGH confidence: Defect is obvious, unambiguous, and clearly visible
-- MEDIUM confidence: Defect visible but borderline, some uncertainty
-- LOW confidence: Unclear if it's a defect, or very subtle/ambiguous feature
-- When NO defects found AND image quality is good: Use HIGH confidence with {{"overall_condition": "good"}}
+- Report ONLY defects you can CLEARLY see - do NOT hallucinate
+- Distinguish between real defects and normal features (reflections, seams, shadows)
+- "No defects" is VALID for genuinely clean components
+- When uncertain, mark confidence as "low" but still report it
 
 BOUNDING BOXES:
-- Use PERCENTAGES (0-100) for all coordinates
-- x = % from left edge, y = % from top edge
-- width/height = % of image dimensions
-- Box must TIGHTLY enclose only the damaged/defective area
-- Do NOT include surrounding good material
-- Must be within image bounds (x + width ≤ 100, y + height ≤ 100)
-
-CONSERVATIVE APPROACH:
-- For high criticality, be extra thorough but do NOT invent defects
-- If uncertain, mark confidence as "low" - this triggers human review
-- For safety-critical domains, be conservative but accurate
-- Better to flag uncertainty than to create false alarms
+- Large damage = large box covering the entire affected area
+- Small debris/spots = smaller targeted boxes
+- Create SEPARATE boxes for issues on DIFFERENT parts
+- Must be within bounds (x + width ≤ 100, y + height ≤ 100)
 
 Keep response concise. Target: 400-500 tokens.
 
@@ -184,14 +173,12 @@ EXPLAINER_PROMPT = """You are a technical writer creating a safety inspection re
 STRUCTURED FINDINGS (AUTHORITATIVE - DO NOT CONTRADICT):
 {findings}
 
-CRITICAL: You MUST include ALL required sections below. If output is truncated, prioritize EXECUTIVE SUMMARY and FINAL RECOMMENDATION above other sections.
-
-You have ~1500 tokens available. Prioritize completeness over verbosity.
+CRITICAL: You MUST include ALL required sections below.
 
 REQUIRED SECTIONS (IN ORDER - YOU MUST INCLUDE ALL):
 
 EXECUTIVE SUMMARY
-[2-3 sentences: what was inspected, overall finding, key reasoning]
+[5-6 sentences: what was inspected, overall finding, key reasoning]
 [THIS SECTION IS MANDATORY - ALWAYS INCLUDE FIRST]
 
 INSPECTION DETAILS
