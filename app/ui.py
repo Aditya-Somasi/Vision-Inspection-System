@@ -165,34 +165,46 @@ def display_inspection_results(results: Dict[str, Any]):
         from src.reporting.pdf_generator import parse_explanation_sections
         sections = parse_explanation_sections(explanation)
         
+        def _clean_section_text(text: str) -> str:
+            """Strip any stray marker lines and whitespace before display."""
+            if not text:
+                return ""
+            cleaned_lines = []
+            for line in text.splitlines():
+                if line.strip().startswith("---"):
+                    continue
+                cleaned_lines.append(line)
+            return "\n".join(cleaned_lines).strip()
+        
         # Display sections in a structured way
         if sections:
-            # Show SUMMARY first if available
-            if "SUMMARY" in sections and sections["SUMMARY"].strip():
-                st.markdown("#### 📋 Summary")
-                st.markdown(sections["SUMMARY"])
-                st.divider()
+            # Define section display order with proper names
+            section_order = [
+                ("EXECUTIVE SUMMARY", "📋 Executive Summary"),
+                ("INSPECTION DETAILS", "🔍 Inspection Details"),
+                ("DEFECT ANALYSIS", "⚠️ Defect Analysis"),
+                ("REASONING CHAINS", "🔗 Reasoning Chains"),
+                ("COUNTERFACTUAL ANALYSIS", "🔄 Counterfactual Analysis"),
+                ("FINAL RECOMMENDATION", "✅ Final Recommendation"),
+            ]
             
-            # Show other key sections
-            key_sections = ["KEY TAKEAWAYS", "RECOMMENDATIONS", "FINAL RECOMMENDATION", 
-                           "REASONING CHAINS", "INSPECTOR ANALYSIS", "AUDITOR VERIFICATION", 
-                           "COUNTERFACTUAL"]
-            
-            for section_name in key_sections:
-                if section_name in sections and sections[section_name].strip():
-                    display_name = section_name.replace("_", " ").title()
+            displayed = set()
+            for section_key, display_name in section_order:
+                safe_text = _clean_section_text(sections.get(section_key, ""))
+                if safe_text:
                     st.markdown(f"#### {display_name}")
-                    st.markdown(sections[section_name])
+                    st.markdown(safe_text)
                     st.divider()
+                    displayed.add(section_key)
             
-            # Show any remaining sections
-            shown_sections = set(["SUMMARY"] + key_sections)
-            remaining = set(sections.keys()) - shown_sections
+            # Show any remaining sections not in the predefined order
+            remaining = set(sections.keys()) - displayed
             for section_name in remaining:
-                if sections[section_name].strip():
-                    display_name = section_name.replace("_", " ").title()
-                    st.markdown(f"#### {display_name}")
-                    st.markdown(sections[section_name])
+                safe_text = _clean_section_text(sections[section_name])
+                if safe_text:
+                    display_title = section_name.replace("_", " ").title()
+                    st.markdown(f"#### {display_title}")
+                    st.markdown(safe_text)
                     st.divider()
         else:
             # Fallback: display raw explanation

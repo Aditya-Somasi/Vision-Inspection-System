@@ -163,6 +163,24 @@ Keep each statement under 15 words. Be specific and actionable."""
         chains.append(f"4. Confidence: {auditor_result.overall_confidence}")
         
         return "\n".join(chains)
+
+    def _detect_truncation(self, response: str) -> bool:
+        """Detect if the LLM response appears truncated or incomplete."""
+        if not response:
+            return True
+        text = response.strip()
+        # Look for the final recommendation marker with the new format
+        has_final_marker = "--- FINAL RECOMMENDATION ---" in text
+        has_final_keyword = "FINAL RECOMMENDATION" in text.upper()
+        
+        if not has_final_marker and not has_final_keyword:
+            return True
+        
+        # If it ends without terminal punctuation, likely cut off
+        if not text.endswith((".", "!", "?", "\n")):
+            return True
+        
+        return False
     
     def generate_explanation(
         self,
@@ -237,6 +255,61 @@ Keep each statement under 15 words. Be specific and actionable."""
             
             # Generate main explanation
             explanation = self._call_llm(prompt)
+
+            # Detect truncation and supplement if needed - try up to 3 continuations
+            max_continuations = 3
+            for attempt in range(max_continuations):
+                if not self._detect_truncation(explanation):
+                    break  # Complete, no need to continue
+                    
+                self.logger.warning(f"Explanation appears truncated (attempt {attempt + 1}/{max_continuations}); requesting continuation.")
+                
+                # Identify which sections are missing
+                required_sections = [
+                    "EXECUTIVE SUMMARY", "INSPECTION DETAILS", "DEFECT ANALYSIS",
+                    "REASONING CHAINS", "COUNTERFACTUAL ANALYSIS", "FINAL RECOMMENDATION"
+                ]
+                missing = [s for s in required_sections if f"--- {s} ---" not in explanation]
+                
+                try:
+                    continuation_prompt = (
+                        f"Continue the inspection report. The following sections are MISSING and MUST be added:\n"
+                        f"{', '.join(missing)}\n\n"
+                        f"Use the EXACT marker format: --- SECTION NAME ---\n"
+                        f"Do NOT repeat sections already present. Start from where the text ended.\n\n"
+                        f"PREVIOUS TEXT (last 2000 chars):\n"
+                        f"{explanation[-2000:]}"
+                    )
+                    continuation = self._call_llm(continuation_prompt)
+                    if continuation:
+                        explanation = explanation.rstrip() + "\n\n" + continuation.strip()
+                except Exception as cont_err:
+                    self.logger.warning(f"Continuation request {attempt + 1} failed: {cont_err}")
+                    break
+
+                # If still truncated, add a minimal final block using the new marker format
+                if self._detect_truncation(explanation):
+                    self.logger.warning("Continuation still appears incomplete; adding fallback completion block.")
+                    verdict_str = safety_verdict.get("verdict", "UNKNOWN")
+                    action_required = (
+                        "No action required" if verdict_str == "SAFE"
+                        else "Further inspection or remediation recommended"
+                    )
+                    safety_line = (
+                        "Safety Assessment: Component appears safe based on current findings."
+                        if verdict_str == "SAFE"
+                        else "Safety Assessment: Risks remain; address detected issues."
+                    )
+                    # Ensure the response ends cleanly with a complete final recommendation block
+                    explanation = explanation.rstrip()
+                    if not explanation.endswith(("\n", "\r")):
+                        explanation += "\n"
+                    explanation += (
+                        "\n--- FINAL RECOMMENDATION ---\n\n"
+                        f"Verdict: {verdict_str}\n"
+                        f"Action Required: {action_required}\n"
+                        f"{safety_line}\n"
+                    )
             
             # Validate explanation contains required sections
             explanation_lower = explanation.lower()

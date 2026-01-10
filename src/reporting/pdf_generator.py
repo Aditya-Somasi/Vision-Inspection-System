@@ -52,228 +52,166 @@ BRAND_DARK = HexColor("#1f2937")      # Dark
 
 def parse_explanation_sections(explanation: str) -> Dict[str, str]:
     """
-    Parse explainer output into sections for structured PDF display.
+    Parse explainer output into sections for structured PDF/UI display.
     
-    Handles various markdown formats: **Bold Headers**, ## Markdown Headers.
-    Preserves the full content of each section including multi-paragraph text.
-    
-    Expected format from explainer:
-    [Main explanation text]
-    
-    ---
-    
-    ## REASONING CHAINS
-    
-    [Reasoning chains content]
-    
-    ---
-    
-    ## COUNTERFACTUAL ANALYSIS
-    
-    [Counterfactual content]
+    - Strips marker lines (even if malformed like '--- EXECUTIVE SUMMARY').
+    - Removes leftover raw text outside sections to avoid duplication.
+    - Falls back to keyword-based parsing for legacy formats.
     """
-    # Handle None or empty explanation
     if not explanation:
-        return {"SUMMARY": "Explanation not available - workflow may have been interrupted."}
-    
-    sections = {}
-    logger.debug(f"Parsing explanation sections. Length: {len(explanation)}")
-    
-    # Map of patterns to normalized section names
-    # Ordered by specificity (longer patterns first to avoid false matches)
-    section_patterns = [
-        ("REASONING CHAINS", ["reasoning chains", "reasoning chain"]),
-        ("INSPECTOR ANALYSIS", ["inspector analysis", "inspector:"]),
-        ("AUDITOR VERIFICATION", ["auditor verification", "auditor:"]),
-        ("COUNTERFACTUAL", ["counterfactual analysis", "counterfactual"]),
-        ("KEY TAKEAWAYS", ["key takeaways", "key findings", "highlights"]),
-        ("RECOMMENDATIONS", ["recommendations", "recommended actions", "next steps", "action items"]),
-        ("SUMMARY", ["summary", "inspection findings", "verdict", "overview"]),
-    ]
+        return {"EXECUTIVE SUMMARY": "Explanation not available - workflow may have been interrupted."}
     
     text = explanation.strip()
+    logger.debug(f"Parsing explanation sections. Length: {len(text)}")
     
-    # Strategy 1: Try to split by explicit section markers (---) followed by ## headers
-    # This handles the explainer format: "content\n\n---\n\n## SECTION_NAME\n\ncontent"
-    section_marker_pattern = r'(?:^|\n+)---+\n+##\s*([A-Z\s]+)\n+'
+    sections: Dict[str, str] = {}
     
-    # Find all explicit sections with markers
-    explicit_sections = list(re.finditer(section_marker_pattern, text, re.MULTILINE))
+    canonical_order = [
+        "EXECUTIVE SUMMARY",
+        "INSPECTION DETAILS",
+        "DEFECT ANALYSIS",
+        "REASONING CHAINS",
+        "COUNTERFACTUAL ANALYSIS",
+        "FINAL RECOMMENDATION",
+    ]
     
-    if explicit_sections:
-        logger.debug(f"Found {len(explicit_sections)} explicit section markers")
+    section_aliases = {
+        "summary": "EXECUTIVE SUMMARY",
+        "executive summary": "EXECUTIVE SUMMARY",
+        "overview": "EXECUTIVE SUMMARY",
+        "inspection details": "INSPECTION DETAILS",
+        "inspector analysis": "INSPECTION DETAILS",
+        "auditor verification": "INSPECTION DETAILS",
+        "defect analysis": "DEFECT ANALYSIS",
+        "defects": "DEFECT ANALYSIS",
+        "reasoning chains": "REASONING CHAINS",
+        "reasoning": "REASONING CHAINS",
+        "counterfactual analysis": "COUNTERFACTUAL ANALYSIS",
+        "counterfactual": "COUNTERFACTUAL ANALYSIS",
+        "final recommendation": "FINAL RECOMMENDATION",
+        "recommendation": "FINAL RECOMMENDATION",
+        "recommendations": "FINAL RECOMMENDATION",
+        "verdict": "FINAL RECOMMENDATION",
+    }
+    
+    def normalize_section_name(name: str) -> str:
+        lowered = name.lower().strip()
+        for alias, canonical in section_aliases.items():
+            if alias in lowered:
+                return canonical
+        return name.upper().strip()
+    
+    # ------------------------------------------------------------------
+    # Strategy 1: Marker-based parsing (tolerant to missing trailing ---)
+    # ------------------------------------------------------------------
+    marker_pattern = re.compile(r"^---\s*([A-Za-z\s]+?)(?:\s*---)?\s*$")
+    lines = text.split("\n")
+    
+    current_section = None
+    current_content: List[str] = []
+    marker_found = False
+    
+    for line in lines:
+        stripped = line.strip()
+        marker_match = marker_pattern.match(stripped)
+        if marker_match:
+            marker_found = True
+            # Save previous section
+            if current_section is not None:
+                content_text = "\n".join(current_content).strip()
+                content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
+                if content_text:
+                    sections[current_section] = content_text
+            # Start new section
+            header = marker_match.group(1)
+            current_section = normalize_section_name(header)
+            current_content = []
+            continue
         
-        # Extract SUMMARY (everything before first marker)
-        first_marker_start = explicit_sections[0].start()
-        summary_text = text[:first_marker_start].strip()
-        if summary_text:
-            # Clean up markdown
-            summary_text = summary_text.replace("**", "").replace("##", "").replace("#", "")
-            sections["SUMMARY"] = summary_text
+        # Skip stray marker-like lines inside content
+        if stripped.startswith("---"):
+            continue
         
-        # Extract each named section
-        for i, match in enumerate(explicit_sections):
-            section_header = match.group(1).strip()
-            section_start = match.end()
-            
-            # Find where this section ends (either at next marker or end of text)
-            if i + 1 < len(explicit_sections):
-                section_end = explicit_sections[i + 1].start()
-            else:
-                section_end = len(text)
-            
-            section_content = text[section_start:section_end].strip()
-            
-            # Normalize section name
-            normalized_name = section_header
-            for sname, patterns in section_patterns:
-                for pattern in patterns:
-                    if pattern in section_header.lower():
-                        normalized_name = sname
-                        break
-                if normalized_name != section_header:
-                    break
-            
-            # Clean markdown
-            section_content = section_content.replace("**", "").replace("##", "").replace("#", "")
-            
-            if section_content:
-                sections[normalized_name] = section_content
-                logger.debug(f"Extracted section: {normalized_name} ({len(section_content)} chars)")
-    else:
-        logger.debug("No explicit section markers found, using pattern matching on lines")
+        if current_section:
+            current_content.append(line)
+        else:
+            # Content before first marker: treat as EXECUTIVE SUMMARY
+            if stripped:
+                current_section = "EXECUTIVE SUMMARY"
+                current_content.append(line)
+    
+    # Save last collected section
+    if current_section:
+        content_text = "\n".join(current_content).strip()
+        content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
+        if content_text:
+            sections[current_section] = content_text
+    
+    # ------------------------------------------------------------------
+    # Strategy 2: Keyword fallback if no markers were found
+    # ------------------------------------------------------------------
+    if not marker_found and not sections:
+        logger.debug("No markers found; using keyword-based parsing fallback.")
+        header_keywords = [
+            ("EXECUTIVE SUMMARY", ["executive summary", "summary", "overview"]),
+            ("INSPECTION DETAILS", ["inspection details", "inspector analysis", "auditor verification"]),
+            ("DEFECT ANALYSIS", ["defect analysis", "defects found", "defects detected"]),
+            ("REASONING CHAINS", ["reasoning chains", "reasoning"]),
+            ("COUNTERFACTUAL ANALYSIS", ["counterfactual analysis", "counterfactual"]),
+            ("FINAL RECOMMENDATION", ["final recommendation", "recommendation", "verdict"]),
+        ]
         
-        # Strategy 2: Fall back to line-by-line pattern matching (no explicit markers)
-        current_section = "SUMMARY"
+        current_section = "EXECUTIVE SUMMARY"
         current_content = []
         
-        for line in text.split("\n"):
-            line_stripped = line.strip()
-            if not line_stripped:
-                # Preserve blank lines within sections
-                if current_content:
-                    current_content.append("")
-                continue
+        for line in lines:
+            stripped = line.strip()
+            lowered = stripped.lower()
             
-            line_clean = line_stripped.replace("**", "").replace("##", "").replace("#", "").replace(":", "").strip()
-            line_lower = line_clean.lower()
-            
-            # Check if line is a section header (must be at line start and reasonably short)
-            matched_section = None
-            for section_name, patterns in section_patterns:
-                for pattern in patterns:
-                    # Match if pattern is at the start of the line and line is short (header-like)
-                    if line_lower.startswith(pattern) and len(line_clean) < 80:
-                        matched_section = section_name
-                        break
-                if matched_section:
+            matched = None
+            for section_name, keywords in header_keywords:
+                if any(kw in lowered and len(stripped) < 80 for kw in keywords):
+                    matched = section_name
                     break
             
-            if matched_section:
-                # Save previous section
+            if matched:
                 if current_content:
                     content_text = "\n".join(current_content).strip()
-                    # Clean up markdown formatting for PDF
                     content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
-                    if content_text:
+                    if content_text and current_section not in sections:
                         sections[current_section] = content_text
-                current_section = matched_section
+                current_section = matched
                 current_content = []
             else:
-                # Add content line
-                if line_stripped:
-                    clean_line = line_stripped.replace("**", "").replace("##", "").replace("#", "")
+                if stripped or current_content:
+                    clean_line = stripped.replace("**", "").replace("##", "").replace("#", "")
                     current_content.append(clean_line)
-                elif current_content:
-                    # Preserve paragraph breaks
-                    current_content.append("")
         
-        # Save last section
         if current_content:
             content_text = "\n".join(current_content).strip()
             content_text = content_text.replace("**", "").replace("##", "").replace("#", "")
-            if content_text:
+            if content_text and current_section not in sections:
                 sections[current_section] = content_text
     
-    # Strategy 3: Enhanced keyword-based extraction (ALWAYS RUN - more robust, works even if formatting varies)
-    # This is more aggressive and will extract sections even without explicit markers
-    logger.debug("Performing enhanced keyword-based section extraction")
+    # ------------------------------------------------------------------
+    # Final cleanup and ordering
+    # ------------------------------------------------------------------
+    if "EXECUTIVE SUMMARY" not in sections:
+        logger.warning("No EXECUTIVE SUMMARY found; using first 500 chars as fallback")
+        fallback = text[:500].replace("**", "").replace("##", "").replace("#", "")
+        sections["EXECUTIVE SUMMARY"] = fallback.strip() if fallback.strip() else "Summary not available."
     
-    # Enhanced keywords that indicate section starts (more comprehensive)
-    section_keywords = {
-        "EXECUTIVE SUMMARY": ["executive summary", "summary", "overview", "inspection summary"],
-        "KEY TAKEAWAYS": ["key takeaways", "key findings", "highlights", "main points", "takeaways"],
-        "RECOMMENDATIONS": ["recommendations", "recommended actions", "next steps", "action items", "action required", "suggested actions"],
-        "FINAL RECOMMENDATION": ["final recommendation", "recommendation", "verdict", "conclusion", "final verdict"],
-        "REASONING CHAINS": ["reasoning chains", "reasoning", "analysis reasoning", "thought process"],
-        "INSPECTOR ANALYSIS": ["inspector analysis", "inspector:", "inspector findings", "primary analysis"],
-        "AUDITOR VERIFICATION": ["auditor verification", "auditor:", "auditor findings", "verification"],
-        "COUNTERFACTUAL": ["counterfactual", "what if", "alternative scenario", "counterfactual analysis"]
-    }
+    # Preserve only known sections and keep their order; keep extras at end
+    ordered_sections: Dict[str, str] = {}
+    for sec in canonical_order:
+        if sec in sections and sections[sec].strip():
+            ordered_sections[sec] = sections[sec].strip()
+    for sec, val in sections.items():
+        if sec not in ordered_sections and val.strip():
+            ordered_sections[sec] = val.strip()
     
-    # Always run keyword extraction to find additional sections
-    # This supplements Strategy 1 and 2, doesn't replace them
-    lines = text.split("\n")
-    keyword_sections = {}
-    current_section = None
-    current_content = []
-    
-    for line in lines:
-        line_lower = line.lower().strip()
-        
-        # Check if line matches any section keyword
-        matched_keyword = None
-        for section_name, keywords in section_keywords.items():
-            for keyword in keywords:
-                if keyword in line_lower and len(line_lower) < 100:  # Reasonable header length
-                    matched_keyword = section_name
-                    break
-            if matched_keyword:
-                break
-        
-        if matched_keyword:
-            # Save previous section
-            if current_section and current_content:
-                content = "\n".join(current_content).strip()
-                if content:
-                    keyword_sections[current_section] = content.replace("**", "").replace("##", "")
-            
-            current_section = matched_keyword
-            current_content = []
-        elif current_section:
-            # Add to current section
-            if line.strip():
-                current_content.append(line.strip().replace("**", "").replace("##", ""))
-        elif not current_section:
-            # Before any section identified, treat as SUMMARY
-            if line.strip() and not line_lower.startswith(("---", "##")):
-                current_section = "SUMMARY"
-                current_content.append(line.strip().replace("**", "").replace("##", ""))
-    
-    # Save last section
-    if current_section and current_content:
-        content = "\n".join(current_content).strip()
-        if content:
-            keyword_sections[current_section] = content.replace("**", "").replace("##", "")
-    
-    # Merge keyword sections with existing sections (keyword sections take precedence if they have more content)
-    for section_name, content in keyword_sections.items():
-        if section_name not in sections or len(content) > len(sections.get(section_name, "")):
-            sections[section_name] = content
-    
-    # Ensure we have at least a SUMMARY - if not, use first meaningful content
-    if not sections or "SUMMARY" not in sections:
-        logger.warning("No SUMMARY section found, generating fallback from raw text")
-        # Take first 3-5 sentences as summary
-        sentences = explanation.split('.')
-        summary_text = '. '.join(sentences[:5]).strip()
-        if not summary_text:
-            summary_text = explanation[:500]  # First 500 chars as fallback
-        sections["SUMMARY"] = summary_text.replace("**", "").replace("##", "").replace("#", "")
-    
-    logger.debug(f"Parsed {len(sections)} sections: {list(sections.keys())}")
-    
-    return sections
+    logger.debug(f"Parsed {len(ordered_sections)} sections: {list(ordered_sections.keys())}")
+    return ordered_sections
 
 
 
@@ -826,7 +764,7 @@ class InspectionReport:
         logger.info(f"Parsed {len(sections)} sections for PDF: {list(sections.keys())}")
         
         # Add completeness indicator
-        required_sections = ["SUMMARY", "FINAL RECOMMENDATION"]
+        required_sections = ["EXECUTIVE SUMMARY", "FINAL RECOMMENDATION"]
         missing_sections = [s for s in required_sections if s not in sections or not sections.get(s, "").strip()]
         
         if missing_sections:
@@ -852,9 +790,9 @@ class InspectionReport:
             )))
             elements.append(Spacer(1, 0.1 * inch))
         
-        # Validate that SUMMARY section exists (critical) - generate comprehensive fallback if missing
-        if "SUMMARY" not in sections or not sections.get("SUMMARY", "").strip():
-            logger.warning("SUMMARY section missing or empty - generating comprehensive fallback")
+        # Validate that EXECUTIVE SUMMARY section exists (critical) - generate comprehensive fallback if missing
+        if "EXECUTIVE SUMMARY" not in sections or not sections.get("EXECUTIVE SUMMARY", "").strip():
+            logger.warning("EXECUTIVE SUMMARY section missing or empty - generating comprehensive fallback")
             inspector = state.get("inspector_result", {})
             auditor = state.get("auditor_result", {})
             object_name = inspector.get("object_identified", "component") or auditor.get("object_identified", "component")
@@ -909,8 +847,8 @@ class InspectionReport:
                 fallback_summary += f"Verdict: {verdict_str}\n"
                 fallback_summary += "Action Required: Human review recommended to make final determination."
             
-            sections["SUMMARY"] = fallback_summary
-            logger.info("Generated comprehensive fallback SUMMARY from structured data")
+            sections["EXECUTIVE SUMMARY"] = fallback_summary
+            logger.info("Generated comprehensive fallback EXECUTIVE SUMMARY from structured data")
         
         # Section header style
         section_header_style = ParagraphStyle(
@@ -923,18 +861,25 @@ class InspectionReport:
             spaceAfter=6
         )
         
-        # Display each section with proper formatting
-        # Include FINAL RECOMMENDATION if present (may be parsed separately)
+        def clean_section_text(text: str) -> str:
+            """Remove stray marker lines and trim whitespace for display."""
+            if not text:
+                return ""
+            cleaned_lines = []
+            for line in text.splitlines():
+                if line.strip().startswith("---"):
+                    continue
+                cleaned_lines.append(line)
+            return "\n".join(cleaned_lines).strip()
+        
+        # Display each section with proper formatting (matches new marker format)
         section_order = [
-            "SUMMARY",
-            "EXECUTIVE SUMMARY",  # Also check for this variant
-            "KEY TAKEAWAYS",
-            "RECOMMENDATIONS",
-            "FINAL RECOMMENDATION",  # Ensure this is included
+            "EXECUTIVE SUMMARY",
+            "INSPECTION DETAILS",
+            "DEFECT ANALYSIS",
             "REASONING CHAINS",
-            "INSPECTOR ANALYSIS",
-            "AUDITOR VERIFICATION",
-            "COUNTERFACTUAL"
+            "COUNTERFACTUAL ANALYSIS",
+            "FINAL RECOMMENDATION",
         ]
         
         # ALWAYS enhance SUMMARY with structured data for comprehensive details
@@ -968,79 +913,8 @@ class InspectionReport:
         # Get processing time
         processing_time = state.get("processing_time", 0)
         
-        if "SUMMARY" in sections and sections["SUMMARY"].strip():
-            summary_text = sections["SUMMARY"].strip()
-            # Enhance with structured data for comprehensive details
-            enhanced_summary = (
-                f"{summary_text}\n\n"
-                f"═══════════════════════════════════════════════════════════════\n"
-                f"DETAILED INSPECTION FINDINGS\n"
-                f"═══════════════════════════════════════════════════════════════\n\n"
-                f"OBJECT ANALYSIS:\n"
-                f"• Object Identified: {object_name}\n"
-                f"• Criticality Level: {context.get('criticality', 'unknown').upper()}\n"
-                f"• Domain: {context.get('domain') or 'General'}\n"
-                f"• Processing Time: {processing_time:.2f} seconds\n\n"
-                f"DEFECT ANALYSIS:\n"
-                f"• Total Defects Found: {defect_count}\n"
-                f"  - Critical Defects: {critical_count} (require immediate attention)\n"
-                f"  - Moderate Defects: {moderate_count} (need monitoring)\n"
-                f"  - Cosmetic Defects: {cosmetic_count} (documentation only)\n\n"
-            )
-            
-            # Add defect type breakdown
-            if defect_types:
-                enhanced_summary += f"DEFECT TYPE BREAKDOWN:\n"
-                for defect_type, counts in defect_types.items():
-                    total = sum(counts.values())
-                    enhanced_summary += f"• {defect_type}: {total} total"
-                    if counts["CRITICAL"] > 0:
-                        enhanced_summary += f" ({counts['CRITICAL']} critical"
-                        if counts["MODERATE"] > 0 or counts["COSMETIC"] > 0:
-                            enhanced_summary += f", {counts['MODERATE']} moderate, {counts['COSMETIC']} cosmetic"
-                        enhanced_summary += ")"
-                    elif counts["MODERATE"] > 0:
-                        enhanced_summary += f" ({counts['MODERATE']} moderate"
-                        if counts["COSMETIC"] > 0:
-                            enhanced_summary += f", {counts['COSMETIC']} cosmetic"
-                        enhanced_summary += ")"
-                    elif counts["COSMETIC"] > 0:
-                        enhanced_summary += f" ({counts['COSMETIC']} cosmetic)"
-                    enhanced_summary += "\n"
-                enhanced_summary += "\n"
-            
-            enhanced_summary += (
-                f"MODEL CONSENSUS ANALYSIS:\n"
-                f"• Inspector Model: {inspector_model}\n"
-                f"• Auditor Model: {auditor_model}\n"
-                f"• Models Agreement: {'✓ Agreed' if models_agree else '⚠ Disagreed'}\n"
-                f"• Agreement Score: {agreement_score:.1%}\n"
-                f"• Inspector Confidence: {inspector_conf}\n"
-                f"• Auditor Confidence: {auditor_conf}\n\n"
-                f"FINAL VERDICT:\n"
-                f"• Safety Verdict: {verdict.get('verdict', 'UNKNOWN')}\n"
-                f"• Human Review Required: {'Yes' if verdict.get('requires_human') else 'No'}\n"
-            )
-            
-            if verdict.get('verdict') == "UNSAFE":
-                enhanced_summary += (
-                    f"• Action Required: Further inspection or remediation recommended. "
-                    f"The detected defects pose safety concerns that require attention before use.\n"
-                )
-            elif verdict.get('verdict') == "SAFE":
-                enhanced_summary += (
-                    f"• Action Required: No immediate action required. "
-                    f"The item appears safe for use based on the comprehensive analysis.\n"
-                )
-            else:
-                enhanced_summary += (
-                    f"• Action Required: Human review recommended to make final determination.\n"
-                )
-            
-            sections["SUMMARY"] = enhanced_summary
-            logger.info("Enhanced SUMMARY with comprehensive structured data")
-        else:
-            # If no SUMMARY, create comprehensive one from structured data
+        if not ("EXECUTIVE SUMMARY" in sections and sections["EXECUTIVE SUMMARY"].strip()):
+            # If no EXECUTIVE SUMMARY, create comprehensive one from structured data
             comprehensive_summary = (
                 f"═══════════════════════════════════════════════════════════════\n"
                 f"EXECUTIVE SUMMARY\n"
@@ -1111,15 +985,15 @@ class InspectionReport:
                     "The automated analysis requires expert evaluation to confirm the safety verdict."
                 )
             
-            sections["SUMMARY"] = comprehensive_summary
-            logger.info("Created comprehensive SUMMARY from structured data")
+            sections["EXECUTIVE SUMMARY"] = comprehensive_summary
+            logger.info("Created comprehensive EXECUTIVE SUMMARY from structured data")
         
         # Track which sections we've displayed
         displayed_sections = set()
         
         for section_name in section_order:
             if section_name in sections:
-                section_content = sections[section_name].strip()
+                section_content = clean_section_text(sections[section_name])
                 if not section_content:
                     continue
                 
@@ -1144,7 +1018,7 @@ class InspectionReport:
                             # Use paragraph with bullet list style
                             bullet_text = f"• {line}"
                             elements.append(Paragraph(bullet_text, self.styles["CustomBodyText"]))
-                elif section_name in ["REASONING CHAINS", "INSPECTOR ANALYSIS", "AUDITOR VERIFICATION"]:
+                elif section_name in ["REASONING CHAINS", "INSPECTION DETAILS", "INSPECTOR ANALYSIS", "AUDITOR VERIFICATION"]:
                     # For analysis sections, preserve structure with monospace-style formatting
                     lines = section_content.split("\n")
                     for line in lines:
@@ -1155,10 +1029,23 @@ class InspectionReport:
                                 elements.append(Paragraph(f"<b>{line}</b>", self.styles["CustomBodyText"]))
                             else:
                                 elements.append(Paragraph(line, self.styles["CustomBodyText"]))
+                elif section_name == "DEFECT ANALYSIS":
+                    # Keep each defect on its own line/bullet for readability
+                    # Split on newlines or numbered markers
+                    entries = re.split(r"\n+(?=(?:\d+\.\s+|Type:))", section_content)
+                    for entry in entries:
+                        entry = entry.strip()
+                        if not entry:
+                            continue
+                        # Normalize internal newlines to spaces
+                        entry = " ".join(entry.split())
+                        bullet_text = entry if re.match(r"^\d+\.", entry) else f"• {entry}"
+                        elements.append(Paragraph(bullet_text, self.styles["CustomBodyText"]))
+                        elements.append(Spacer(1, 0.05 * inch))
                 else:
                     # Default: display as paragraph with preserved structure
-                    # For SUMMARY section, preserve line breaks for better readability
-                    if section_name == "SUMMARY":
+                    # For EXECUTIVE SUMMARY section, preserve line breaks for better readability
+                    if section_name == "EXECUTIVE SUMMARY":
                         # Split by lines to preserve structure (especially for detailed summaries)
                         lines = section_content.split("\n")
                         current_para = []
@@ -1207,7 +1094,7 @@ class InspectionReport:
         if additional_sections:
             logger.info(f"Displaying additional sections: {additional_sections}")
             for section_name in additional_sections:
-                section_content = sections[section_name].strip()
+                section_content = clean_section_text(sections[section_name])
                 if not section_content:
                     continue
                 

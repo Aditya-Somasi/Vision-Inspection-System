@@ -1,4 +1,5 @@
 # Prompt Templates Configuration
+# NOTE: Documentation-only. Actual runtime prompts are in utils/prompts.py
 # Versioned prompts for VLM agents
 
 version: "1.0.0"

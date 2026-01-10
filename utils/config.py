@@ -48,7 +48,7 @@ class Config(BaseSettings):
         alias="VLM_INSPECTOR_TEMPERATURE"
     )
     vlm_inspector_max_tokens: int = Field(
-        default=2048,
+        default=4096,
         alias="VLM_INSPECTOR_MAX_TOKENS"
     )
     vlm_inspector_provider: str = Field(
@@ -67,7 +67,7 @@ class Config(BaseSettings):
         alias="VLM_AUDITOR_TEMPERATURE"
     )
     vlm_auditor_max_tokens: int = Field(
-        default=2048,
+        default=4096,
         alias="VLM_AUDITOR_MAX_TOKENS"
     )
     vlm_auditor_provider: str = Field(
@@ -80,11 +80,11 @@ class Config(BaseSettings):
         alias="EXPLAINER_MODEL"
     )
     explainer_temperature: float = Field(
-        default=0.3,
+        default=0.5,  # Increased from 0.3 to encourage complete generation
         alias="EXPLAINER_TEMPERATURE"
     )
     explainer_max_tokens: int = Field(
-        default=2048,
+        default=4096,  # Increased from 2048 to ensure all 6 sections complete
         alias="EXPLAINER_MAX_TOKENS"
     )
     

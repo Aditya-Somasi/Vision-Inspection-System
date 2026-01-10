@@ -43,7 +43,8 @@ TASK:
       (adjacent components hit by debris, areas contaminated by spills/leaks)
 
 3. For EACH issue found (primary AND secondary), provide:
-   - Type (describe specifically what you see)
+   - Type (CONCRETE defect name like burnt_area, residue, discoloration, crack; NEVER use category labels like PRIMARY DEFECT / SECONDARY EFFECT as the type)
+   - Optional category: primary | secondary | collateral (ONLY if you want to tag the class; keep the type concrete)
    - Location (be precise about where it is)
    - Bounding box: {{"x": 0-100, "y": 0-100, "width": 0-100, "height": 0-100}} - PERCENTAGES
    - Safety impact: CRITICAL, MODERATE, or COSMETIC
@@ -64,6 +65,9 @@ ACCURACY:
 - If component looks perfect, say so with HIGH confidence
 - If uncertain, mark confidence as "low" but still report it
 
+DEDUPLICATION:
+- Do NOT report the same physical issue more than once. If two boxes describe the same spot, keep a single best box with the clearest reasoning.
+
 BOUNDING BOXES:
 - Large damage = large box covering the entire affected area
 - Small debris/spots = smaller targeted boxes
@@ -75,7 +79,7 @@ SAFETY IMPACT:
 - MODERATE: Affects function or durability
 - COSMETIC: Visual only, no safety/function impact
 
-Keep response concise. Target: 400-500 tokens for JSON, 100-150 tokens for analysis_reasoning.
+Be complete and non-redundant. Include all distinct defects with concrete types; avoid duplicate listings.
 
 Return ONLY valid JSON (no other text):
 {{
@@ -136,13 +140,16 @@ ACCURACY IS CRITICAL:
 - "No defects" is VALID for genuinely clean components
 - When uncertain, mark confidence as "low" but still report it
 
+DEDUPLICATION:
+- Do NOT report the same physical issue more than once. If two boxes describe the same spot, keep a single best box with the clearest reasoning.
+
 BOUNDING BOXES:
 - Large damage = large box covering the entire affected area
 - Small debris/spots = smaller targeted boxes
 - Create SEPARATE boxes for issues on DIFFERENT parts
 - Must be within bounds (x + width ≤ 100, y + height ≤ 100)
 
-Keep response concise. Target: 400-500 tokens.
+Be complete and non-redundant. Include all distinct defects with concrete types; avoid duplicate listings.
 
 Return ONLY valid JSON (same format as Inspector):
 {{
@@ -168,48 +175,61 @@ Return ONLY valid JSON (same format as Inspector):
 # EXPLAINER PROMPT (Llama 3.1 Text)
 # ============================================================================
 
-EXPLAINER_PROMPT = """You are a technical writer creating a safety inspection report.
+EXPLAINER_PROMPT = """You are a technical writer creating a detailed, client-ready safety inspection report.
 
-STRUCTURED FINDINGS (AUTHORITATIVE - DO NOT CONTRADICT):
+STRUCTURED FINDINGS (AUTHORITATIVE SOURCE OF TRUTH):
 {findings}
 
-CRITICAL: You MUST include ALL required sections below.
+CRITICAL ANTI-HALLUCINATION RULES:
+1. The structured findings above contain the EXACT defects found. Do NOT invent additional defects.
+2. Count the defects in the "consensus.combined_defects" array - that is the ONLY list of defects.
+3. Number defects starting from 1 up to the count in the findings. Do NOT create Defect 8, 9, 10 if only 5 defects exist.
+4. If a defect is not in the structured findings, do NOT mention it.
 
-REQUIRED SECTIONS (IN ORDER - YOU MUST INCLUDE ALL):
+CRITICAL FORMAT RULE:
+Each section MUST start with a marker line exactly like this: --- SECTION NAME ---
+followed by a blank line, then the section content.
 
-EXECUTIVE SUMMARY
-[5-6 sentences: what was inspected, overall finding, key reasoning]
-[THIS SECTION IS MANDATORY - ALWAYS INCLUDE FIRST]
+REQUIRED SECTIONS (output ALL of these in order - do not stop early):
 
-INSPECTION DETAILS
-Inspector Findings: [what inspector found]
-Auditor Findings: [what auditor found]
-Agreement: [whether models agreed and confidence level]
+--- EXECUTIVE SUMMARY ---
 
-DEFECT ANALYSIS
-[If defects: list each with type, location, severity]
-[If no defects: "No defects detected. Component appears in good condition."]
+5-6 sentences: what was inspected, overall finding, key reasoning.
 
-FINAL RECOMMENDATION
-Verdict: [SAFE/UNSAFE/REVIEW_REQUIRED]
-Action Required: [specific action to take]
-Safety Assessment: [brief risk assessment]
-[THIS SECTION IS MANDATORY - ALWAYS INCLUDE]
+--- INSPECTION DETAILS ---
 
-OUTPUT FORMAT:
-- Use plain text headers (no markdown ** or ##)
-- Leave blank line between sections
-- Keep each section to 2-3 sentences maximum
-- Use clear, non-technical language
+Inspector findings: what was found.
+Auditor findings: independent verification.
+Agreement: whether models agreed and confidence level.
 
-WRITING RULES:
-- Be direct and actionable
-- Maintain professional tone
-- DO NOT contradict structured findings
-- DO NOT invent defects not in findings
-- DO NOT use markdown formatting
+--- DEFECT ANALYSIS ---
 
-Write the report below. Start with EXECUTIVE SUMMARY:"""
+List ONLY the defects from the structured findings (consensus.combined_defects).
+For each defect, number them 1, 2, 3... in order.
+Include: Type, Location, Severity, Reasoning, Consequences, Recommendation.
+
+If consensus.combined_defects is empty, write: "No defects detected. Component appears in good condition."
+
+--- REASONING CHAINS ---
+
+Brief summary of inspector and auditor reasoning.
+
+--- COUNTERFACTUAL ANALYSIS ---
+
+1-2 sentences on what would change the verdict.
+
+--- FINAL RECOMMENDATION ---
+
+Verdict: SAFE / UNSAFE / REVIEW_REQUIRED
+Action Required: specific next steps
+Safety Assessment: brief confidence justification
+
+OUTPUT RULES:
+- Use EXACTLY the marker format: --- SECTION NAME ---
+- Output ALL 6 sections above - do not stop before --- FINAL RECOMMENDATION ---
+- Do NOT use markdown (no ** or ## or #)
+- Do NOT hallucinate or invent defects beyond what is in structured findings
+- Keep sections concise to ensure you complete all 6 sections"""
 
 # ============================================================================
 # CHAT PROMPTS (For conversational follow-ups)
