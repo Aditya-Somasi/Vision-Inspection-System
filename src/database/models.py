@@ -32,7 +32,8 @@ class InspectionRecord(Base):
     user_notes = Column(Text)
     
     # Results
-    overall_verdict = Column(String, nullable=False)  # SAFE, UNSAFE, REQUIRES_REVIEW
+    overall_verdict = Column(String, nullable=False)  # SAFE, UNSAFE
+    object_identified = Column(String, index=True)  # What object was identified (Car, PCB, Laptop, etc.)
     defect_count = Column(Integer, default=0)
     critical_defect_count = Column(Integer, default=0)
     
@@ -68,6 +69,7 @@ class InspectionRecord(Base):
             "image_filename": self.image_filename,
             "criticality": self.criticality,
             "domain": self.domain,
+            "object_identified": self.object_identified,
             "overall_verdict": self.overall_verdict,
             "defect_count": self.defect_count,
             "critical_defect_count": self.critical_defect_count,

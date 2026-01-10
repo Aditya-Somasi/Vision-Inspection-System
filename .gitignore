@@ -56,6 +56,7 @@ data/uploads/
 data/reports/
 data/logs/
 *.db
+data/
 
 # OS files
 .DS_Store

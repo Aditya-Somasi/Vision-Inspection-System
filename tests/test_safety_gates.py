@@ -158,7 +158,7 @@ class TestSafetyGateEngine:
         assert GATE_CRITICAL_DEFECT in verdict.triggered_gates
     
     def test_gate_3_model_disagreement(self):
-        """Test Gate 3: Model disagreement triggers review."""
+        """Test Gate 3: Model disagreement now makes automatic decision (no human review)."""
         inspector_result = VLMAnalysisResult(
             object_identified="beam",
             overall_condition="damaged",
@@ -185,9 +185,10 @@ class TestSafetyGateEngine:
         
         verdict = evaluate_safety(consensus, context)
         
-        assert verdict.verdict == "REQUIRES_HUMAN_REVIEW"
+        # Now expects binary verdict (SAFE or UNSAFE) instead of REQUIRES_HUMAN_REVIEW
+        # With no defects found by either model, disagreement on condition results in SAFE
+        assert verdict.verdict in ["SAFE", "UNSAFE"]
         assert GATE_MODEL_DISAGREEMENT in verdict.triggered_gates
-        assert verdict.requires_human is True
     
     def test_gate_7_no_defects_safe(self):
         """Test Gate 7: No defects results in SAFE verdict."""

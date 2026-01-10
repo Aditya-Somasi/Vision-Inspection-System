@@ -149,7 +149,7 @@ class InspectionRepository:
         Get defect statistics for analytics.
         
         Returns:
-            Dictionary with statistics
+            Dictionary with statistics including object type distribution
         """
         session = self.get_session()
         
@@ -172,6 +172,14 @@ class InspectionRepository:
                 func.count(InspectionRecord.id)
             ).group_by(InspectionRecord.overall_verdict).all()
             
+            # Object type distribution (NEW - for analytics by object type)
+            object_counts = session.query(
+                InspectionRecord.object_identified,
+                func.count(InspectionRecord.id)
+            ).filter(
+                InspectionRecord.object_identified.isnot(None)
+            ).group_by(InspectionRecord.object_identified).all()
+            
             # Agreement rate
             total_inspections = session.query(InspectionRecord).count()
             agreed_inspections = session.query(InspectionRecord).filter(
@@ -191,6 +199,7 @@ class InspectionRepository:
                 "defect_counts": dict(defect_counts),
                 "severity_counts": dict(severity_counts),
                 "verdict_counts": dict(verdict_counts),
+                "object_counts": dict(object_counts),  # NEW: Object type distribution
                 "agreement_rate": agreement_rate,
                 "total_inspections": total_inspections,
                 "avg_processing_time": avg_time

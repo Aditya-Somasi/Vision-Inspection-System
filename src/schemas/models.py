@@ -96,6 +96,9 @@ class VLMAnalysisResult(BaseModel):
     overall_confidence: Literal["high", "medium", "low"] = Field(
         ..., description="Overall analysis confidence"
     )
+    no_defects_confirmed: bool = Field(
+        default=False, description="Explicit confirmation that NO defects were found (for clean images)"
+    )
     analysis_reasoning: Optional[str] = Field(
         None, description="General reasoning about the image"
     )
@@ -243,8 +246,8 @@ class ConsensusResult(BaseModel):
 
 class SafetyVerdict(BaseModel):
     """Final safety verdict after all checks."""
-    verdict: Literal["SAFE", "UNSAFE", "REQUIRES_HUMAN_REVIEW"] = Field(
-        ..., description="Final safety verdict"
+    verdict: Literal["SAFE", "UNSAFE"] = Field(
+        ..., description="Final safety verdict (binary: SAFE or UNSAFE, no human review)"
     )
     reason: str = Field(..., description="Reason for verdict")
     requires_human: bool = Field(..., description="Whether human review is required")

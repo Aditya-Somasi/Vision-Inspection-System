@@ -89,10 +89,11 @@ Return ONLY valid JSON (no other text):
     }}
   ],
   "overall_confidence": "high" | "medium" | "low",
+  "no_defects_confirmed": false,
   "analysis_reasoning": "2-3 sentence summary of findings"
 }}
 
-If NO defects found, return empty defects array with analysis_reasoning explaining why component appears safe. Use HIGH confidence if image quality is good and component looks perfect."""
+If NO defects found, return empty defects array with "no_defects_confirmed": true and analysis_reasoning explaining why component appears safe. Use HIGH confidence if image quality is good and component looks perfect."""
 
 # ============================================================================
 # AUDITOR PROMPT (Llama 3.2 Vision)
@@ -170,6 +171,7 @@ Return ONLY valid JSON (same format as Inspector):
     }}
   ],
   "overall_confidence": "high" | "medium" | "low",
+  "no_defects_confirmed": true | false,
   "analysis_reasoning": "2-3 sentence independent assessment"
 }}"""
 

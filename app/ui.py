@@ -505,19 +505,21 @@ def analytics_dashboard():
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("Defects by Type")
-            defect_counts = stats.get("defect_counts", {})
-            if defect_counts:
+            st.subheader("Objects Inspected")
+            object_counts = stats.get("object_counts", {})
+            if object_counts:
+                # Capitalize object names for display
+                display_names = {k.title() if k else "Unknown": v for k, v in object_counts.items()}
                 fig = px.pie(
-                    names=list(defect_counts.keys()),
-                    values=list(defect_counts.values()),
-                    title="Distribution of Defect Types",
+                    names=list(display_names.keys()),
+                    values=list(display_names.values()),
+                    title="Distribution by Object Type",
                     color_discrete_sequence=px.colors.qualitative.Set3
                 )
                 fig.update_layout(showlegend=True, height=400)
                 st.plotly_chart(fig, width='stretch')
             else:
-                st.info("📊 No defect data available yet.")
+                st.info("📊 No object data available yet. Objects will appear after inspections.")
         
         with col2:
             st.subheader("Verdicts Distribution")

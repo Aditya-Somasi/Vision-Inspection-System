@@ -11,6 +11,7 @@ langchain-groq
 huggingface-hub
 groq
 requests
+plotly
 
 # Data Validation
 pydantic

@@ -694,6 +694,7 @@ def save_to_database(state: InspectionState) -> InspectionState:
             "domain": context.get("domain"),
             "user_notes": context.get("user_notes"),
             "overall_verdict": verdict["verdict"],
+            "object_identified": state["inspector_result"].get("object_identified"),  # From VLM analysis
             "defect_count": len(consensus["combined_defects"]),
             "critical_defect_count": sum(
                 1 for d in consensus["combined_defects"]
