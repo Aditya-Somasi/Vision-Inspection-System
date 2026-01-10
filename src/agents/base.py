@@ -6,7 +6,7 @@ Provides common functionality for all VLM agents with LangChain integration.
 import base64
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
 from abc import ABC, abstractmethod
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -142,6 +142,75 @@ class BaseVLMAgent(ABC):
             self.logger.error(f"JSON parsing failed: {e}")
             self.logger.debug(f"Raw text: {text[:500]}...")
             raise ValueError(f"Failed to parse JSON response: {e}")
+
+    def _normalize_bbox_percentages(
+        self,
+        bbox: Optional[Dict[str, Any]],
+        image_size: Tuple[int, int],
+    ) -> Optional[Dict[str, float]]:
+        """
+        Ensure bbox coordinates are expressed as percentages (0-100).
+
+        Args:
+            bbox: Raw bbox dict from model
+            image_size: Tuple of (width, height) in pixels
+
+        Returns:
+            Normalized bbox dict or None if invalid
+        """
+        if not bbox:
+            return None
+
+        try:
+            x = float(bbox.get("x"))
+            y = float(bbox.get("y"))
+            width = float(bbox.get("width"))
+            height = float(bbox.get("height"))
+        except (TypeError, ValueError):
+            return None
+
+        img_width, img_height = image_size
+        if img_width <= 0 or img_height <= 0:
+            return None
+
+        def _clamp(value: float, minimum: float, maximum: float) -> float:
+            return max(minimum, min(maximum, value))
+
+        is_percentage = (
+            0.0 <= x <= 100.0
+            and 0.0 <= y <= 100.0
+            and 0.0 < width <= 100.0
+            and 0.0 < height <= 100.0
+            and x + width <= 100.0 + 1e-3
+            and y + height <= 100.0 + 1e-3
+        )
+
+        if not is_percentage:
+            # Treat as pixel values and normalize
+            x = (x / img_width) * 100.0
+            y = (y / img_height) * 100.0
+            width = (width / img_width) * 100.0
+            height = (height / img_height) * 100.0
+
+        x = _clamp(x, 0.0, 100.0)
+        y = _clamp(y, 0.0, 100.0)
+        width = _clamp(width, 0.01, 100.0)
+        height = _clamp(height, 0.01, 100.0)
+
+        if x + width > 100.0:
+            width = 100.0 - x
+        if y + height > 100.0:
+            height = 100.0 - y
+
+        if width <= 0 or height <= 0:
+            return None
+
+        return {
+            "x": round(x, 4),
+            "y": round(y, 4),
+            "width": round(width, 4),
+            "height": round(height, 4),
+        }
     
     @abstractmethod
     def health_check(self) -> bool:

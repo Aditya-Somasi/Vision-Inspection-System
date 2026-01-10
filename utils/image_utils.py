@@ -4,6 +4,7 @@ Handles image loading, preprocessing, resizing, and validation.
 """
 
 import io
+import math
 from pathlib import Path
 from typing import Tuple, Optional, BinaryIO, List, Dict, Any
 
@@ -15,6 +16,68 @@ from utils.config import config
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__, level=config.log_level, component="IMAGE_UTILS")
+
+
+def _convert_bbox_to_pixels(
+    bbox: Dict[str, Any],
+    img_width: int,
+    img_height: int,
+) -> Optional[Dict[str, float]]:
+    """Convert percentage-or-pixel bbox to pixel coordinates."""
+    if not bbox:
+        return None
+
+    try:
+        raw_x = float(bbox.get("x"))
+        raw_y = float(bbox.get("y"))
+        raw_w = float(bbox.get("width"))
+        raw_h = float(bbox.get("height"))
+    except (TypeError, ValueError):
+        return None
+
+    if img_width <= 0 or img_height <= 0:
+        return None
+
+    is_percentage = (
+        0.0 <= raw_x <= 100.0
+        and 0.0 <= raw_y <= 100.0
+        and 0.0 < raw_w <= 100.0
+        and 0.0 < raw_h <= 100.0
+        and raw_x + raw_w <= 100.0 + 1e-3
+        and raw_y + raw_h <= 100.0 + 1e-3
+    )
+
+    if is_percentage:
+        x = (raw_x / 100.0) * img_width
+        y = (raw_y / 100.0) * img_height
+        width = (raw_w / 100.0) * img_width
+        height = (raw_h / 100.0) * img_height
+    else:
+        x, y, width, height = raw_x, raw_y, raw_w, raw_h
+
+    # Clamp to image bounds but retain original center
+    x1 = max(0.0, min(float(img_width), x))
+    y1 = max(0.0, min(float(img_height), y))
+    x2 = max(0.0, min(float(img_width), x + width))
+    y2 = max(0.0, min(float(img_height), y + height))
+
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    center_x = min(max(x + width / 2.0, 0.0), float(img_width))
+    center_y = min(max(y + height / 2.0, 0.0), float(img_height))
+
+    return {
+        "x1": x1,
+        "y1": y1,
+        "x2": x2,
+        "y2": y2,
+        "width": x2 - x1,
+        "height": y2 - y1,
+        "center_x": center_x,
+        "center_y": center_y,
+        "is_percentage": is_percentage,
+    }
 
 
 def load_image(image_path: Path) -> Image.Image:
@@ -173,54 +236,25 @@ def draw_bounding_boxes(
     
     img_height, img_width = img.shape[:2]
     
-    # Confidence filtering: Skip low-confidence defects unless criticality is high
     confidence_levels = {"low": 1, "medium": 2, "high": 3}
     threshold_level = confidence_levels.get(confidence_threshold, 1)
     
-    filtered_boxes = []
-    for box in boxes:
-        box_confidence = box.get("confidence", "medium")
-        box_level = confidence_levels.get(box_confidence, 2)
-        
-        # Include if confidence meets threshold OR if criticality is high (conservative)
-        if box_level >= threshold_level or criticality == "high":
-            filtered_boxes.append(box)
-        else:
-            logger.debug(f"Skipping low-confidence defect: {box.get('type', 'unknown')} (confidence={box_confidence})")
-    
-    # All coordinates are now PERCENTAGES (0-100) per model output normalization
-    for i, box in enumerate(filtered_boxes):
-        # Get percentage coordinates (0-100 range)
-        raw_x = box.get("x", 0)
-        raw_y = box.get("y", 0)
-        raw_w = box.get("width", 10)
-        raw_h = box.get("height", 10)
-        
-        # Validate percentage range before conversion
-        if not (0 <= raw_x <= 100 and 0 <= raw_y <= 100 and 
-                0 < raw_w <= 100 and 0 < raw_h <= 100):
-            logger.warning(f"Invalid bbox coordinates (out of 0-100 range): {box}")
+    for i, box in enumerate(boxes):
+        bbox_pixels = _convert_bbox_to_pixels(
+            box.get("bbox", box),
+            img_width,
+            img_height,
+        )
+        if not bbox_pixels:
+            logger.warning(f"Invalid bbox coordinates (unable to convert): {box}")
             continue
         
-        # Validate bbox doesn't exceed image bounds
-        if raw_x + raw_w > 100 or raw_y + raw_h > 100:
-            logger.warning(f"Bbox exceeds image bounds: x+width={raw_x+raw_w}, y+height={raw_y+raw_h}")
-            continue
-        
-        # Validate reasonableness (area between 0.1% and 50% of image)
-        area_percent = (raw_w * raw_h) / 100.0
-        if area_percent < 0.1:
-            logger.warning(f"Bbox too small (area={area_percent:.2f}%) - skipping: {box}")
-            continue
-        if area_percent > 50.0:
-            logger.warning(f"Bbox too large (area={area_percent:.2f}%) - likely error, skipping: {box}")
-            continue
-        
-        # Convert percentage to pixels
-        x = int((raw_x / 100.0) * img_width)
-        y = int((raw_y / 100.0) * img_height)
-        w = int((raw_w / 100.0) * img_width)
-        h = int((raw_h / 100.0) * img_height)
+        x = int(math.floor(bbox_pixels["x1"]))
+        y = int(math.floor(bbox_pixels["y1"]))
+        w = int(math.ceil(bbox_pixels["width"]))
+        h = int(math.ceil(bbox_pixels["height"]))
+        center_x = bbox_pixels["center_x"]
+        center_y = bbox_pixels["center_y"]
         
         # Ensure minimum size for marker visibility (not box size)
         min_marker_size = max(20, min(img_width, img_height) // 20)
@@ -245,6 +279,8 @@ def draw_bounding_boxes(
             
         severity = box.get("severity", "MODERATE")
         box_confidence = box.get("confidence", "medium")
+        box_level = confidence_levels.get(box_confidence, 2)
+        dim_box = box_level < threshold_level and criticality != "high"
         
         # Box color based on severity
         box_color = (0, 0, 255)  # Red for CRITICAL/MODERATE
@@ -252,7 +288,7 @@ def draw_bounding_boxes(
             box_color = (0, 200, 255)  # Yellow-ish for cosmetic
         
         # Line style based on confidence
-        thickness = 2
+        thickness = 3 if not dim_box else 1
         line_type = cv2.LINE_AA
         use_dashed = (box_confidence == "low")
         
@@ -290,10 +326,9 @@ def draw_bounding_boxes(
         marker_radius = int(max(img_width, img_height) * 0.04)
         marker_radius = max(25, min(marker_radius, 60))  # Clamp (min 25px, max 60px)
         
-        # Marker position: Top-left corner of box (offset inside for visibility)
-        # Ensure marker stays within image bounds
-        marker_cx = max(marker_radius + 5, min(x + marker_radius + 5, img_width - marker_radius - 5))
-        marker_cy = max(marker_radius + 5, min(y + marker_radius + 5, img_height - marker_radius - 5))
+        # Marker centered on bbox for better accuracy
+        marker_cx = max(marker_radius + 5, min(int(center_x), img_width - marker_radius - 5))
+        marker_cy = max(marker_radius + 5, min(int(center_y), img_height - marker_radius - 5))
              
         # Draw white filled circle
         cv2.circle(img, (marker_cx, marker_cy), marker_radius, (255, 255, 255), -1)
@@ -396,15 +431,19 @@ def create_heatmap_overlay(
         widespread_keywords = ["entire surface", "everywhere", "whole component", "complete surface"]
         location_lower = defect.get("location", "").lower()
         
-        has_valid_bbox = (bbox and 
-                         bbox.get("x") is not None and 
-                         bbox.get("y") is not None and
-                         bbox.get("width", 0) > 0 and
-                         bbox.get("height", 0) > 0)
-        
+        has_valid_bbox = (
+            bbox
+            and bbox.get("x") is not None
+            and bbox.get("y") is not None
+            and bbox.get("width", 0) > 0
+            and bbox.get("height", 0) > 0
+        )
+
         # Only treat as widespread if bbox is explicitly None AND keywords present
-        is_widespread = (bbox is None and 
-                        any(kw in location_lower for kw in widespread_keywords))
+        is_widespread = (
+            bbox is None
+            and any(kw in location_lower for kw in widespread_keywords)
+        )
         
         if is_widespread:
             # Add general heat to the entire image with gradient from center
@@ -418,125 +457,70 @@ def create_heatmap_overlay(
             continue
             
         if has_valid_bbox:
-            # Extract coordinates (all are percentages 0-100)
-            raw_x = bbox.get("x", 0)
-            raw_y = bbox.get("y", 0)
-            raw_w = bbox.get("width", 10)
-            raw_h = bbox.get("height", 10)
-            
-            # Validate percentage range
-            if not (0 <= raw_x <= 100 and 0 <= raw_y <= 100 and 
-                    0 < raw_w <= 100 and 0 < raw_h <= 100):
-                logger.warning(f"Invalid bbox in heatmap (out of 0-100 range): {bbox}")
+            bbox_pixels = _convert_bbox_to_pixels(bbox, width, height)
+            if not bbox_pixels:
+                logger.warning(f"Invalid bbox in heatmap (conversion failed): {bbox}")
                 continue
-            
-            if raw_x + raw_w > 100 or raw_y + raw_h > 100:
-                logger.warning(f"Bbox exceeds bounds in heatmap: {bbox}")
-                continue
-            
-            # Validate reasonableness - reduce minimum to include smaller defects (0.05% instead of 0.1%)
-            area_percent = (raw_w * raw_h) / 100.0
-            if area_percent < 0.05 or area_percent > 50.0:
-                logger.warning(f"Bbox unreasonable size in heatmap (area={area_percent:.2f}%), skipping: {bbox}")
-                continue
-            
-            # Convert percentage to pixels
-            x = int((raw_x / 100.0) * width)
-            y = int((raw_y / 100.0) * height)
-            w = int((raw_w / 100.0) * width)
-            h = int((raw_h / 100.0) * height)
-            
-            # Clamp to image bounds - but preserve as much of the bbox as possible for edge defects
-            # First, adjust position if bbox extends beyond bounds
-            if x < 0:
-                w += x  # Reduce width by the amount x is negative
-                x = 0
-            if y < 0:
-                h += y  # Reduce height by the amount y is negative
-                y = 0
-            
-            # Then, clamp width/height if they extend beyond bounds
-            w = min(w, width - x)
-            h = min(h, height - y)
-            
-            if w <= 0 or h <= 0:
-                logger.warning(f"Invalid bbox size after conversion: w={w}, h={h} for defect {defect.get('type')}")
-                continue
-            
-            # Log bbox for debugging accuracy
-            logger.debug(f"Heatmap defect: {defect.get('type')} at bbox: ({raw_x:.1f}%, {raw_y:.1f}%) "
-                        f"size: ({raw_w:.1f}%, {raw_h:.1f}%) -> pixels: ({x},{y}) size: ({w},{h})")
-            
-            # Calculate center of defect (bbox center) - use precise float calculation
-            center_x = float(x + w / 2.0)
-            center_y = float(y + h / 2.0)
-            
-            # Calculate sigma for Gaussian based on bbox size
-            # Make sigma proportional to bbox dimensions for accurate highlighting
-            # Use the larger dimension as primary for circular blur that covers bbox well
-            sigma_x = (w / 2.0) * 1.8  # Increased from 1.6 to 1.8 for better edge coverage
-            sigma_y = (h / 2.0) * 1.8  # Increased from 1.6 to 1.8 for better edge coverage
-            
-            # Use the larger sigma for circular blur that ensures bbox is well covered
+
+            x1 = bbox_pixels["x1"]
+            y1 = bbox_pixels["y1"]
+            x2 = bbox_pixels["x2"]
+            y2 = bbox_pixels["y2"]
+            box_width = max(bbox_pixels["width"], 1.0)
+            box_height = max(bbox_pixels["height"], 1.0)
+            center_x = bbox_pixels["center_x"]
+            center_y = bbox_pixels["center_y"]
+
+            logger.debug(
+                f"Heatmap defect: {defect.get('type')} -> "
+                f"pixels ({x1:.1f},{y1:.1f}) to ({x2:.1f},{y2:.1f})"
+            )
+
+            # Calculate sigma for Gaussian based on bbox size (per-axis for accuracy)
+            sigma_x = max(box_width * 0.6, 12.0)
+            sigma_y = max(box_height * 0.6, 12.0)
+            max_sigma = min(width, height) * 0.2
+            sigma_x = min(sigma_x, max_sigma)
+            sigma_y = min(sigma_y, max_sigma)
             sigma = max(sigma_x, sigma_y)
-            
-            # Ensure minimum sigma for small bboxes to have visible effect
-            # Increased minimum sigma for small defects to ensure they're visible in heatmap
-            min_sigma = max(w, h) * 0.6  # Increased from 0.5 to 0.6 for even better visibility and edge coverage
-            # Also ensure absolute minimum sigma (at least 20 pixels for very small defects - increased from 15)
-            absolute_min_sigma = 20
-            sigma = max(sigma, min_sigma, absolute_min_sigma)
-            
-            # Limit sigma to prevent extremely large kernels (performance)
-            # Increased max sigma slightly to allow better coverage for larger defects near edges
-            max_sigma = min(width, height) * 0.15  # Increased from 12% to 15% for better edge coverage
-            sigma = min(sigma, max_sigma)
-            
-            logger.debug(f"Defect {defect.get('type')}: bbox center=({center_x:.1f},{center_y:.1f}), "
-                        f"bbox=({x},{y},{w},{h}), sigma={sigma:.1f}")
-            
-            # Create a temporary mask for this defect (only in relevant region for speed)
-            # Calculate bounding box for the blur region - extend generously to capture edges
-            # Use 4x sigma radius to ensure full coverage including edges and smooth falloff
-            blur_margin = int(4 * sigma) + 15  # Increased from 3x to 4x, and more padding for edge coverage
-            # Convert to int for slice indices (center_x and center_y are floats)
-            mask_x1 = int(max(0, center_x - blur_margin))
-            mask_y1 = int(max(0, center_y - blur_margin))
-            mask_x2 = int(min(width, center_x + blur_margin + 1))
-            mask_y2 = int(min(height, center_y + blur_margin + 1))
-            
-            # Ensure valid slice indices
+
+            blur_margin = int(4 * max(sigma_x, sigma_y)) + 15
+            mask_x1 = int(max(0, math.floor(center_x - blur_margin)))
+            mask_y1 = int(max(0, math.floor(center_y - blur_margin)))
+            mask_x2 = int(min(width, math.ceil(center_x + blur_margin + 1)))
+            mask_y2 = int(min(height, math.ceil(center_y + blur_margin + 1)))
+
             if mask_x2 <= mask_x1 or mask_y2 <= mask_y1:
-                logger.warning(f"Invalid slice region for defect {defect.get('type')}: "
-                             f"({mask_x1},{mask_y1}) to ({mask_x2},{mask_y2})")
+                logger.warning(
+                    f"Invalid slice region for defect {defect.get('type')}: "
+                    f"({mask_x1},{mask_y1}) to ({mask_x2},{mask_y2})"
+                )
                 continue
-            
-            # Create coordinate grids only for the relevant region
+
             local_y_coords, local_x_coords = np.ogrid[mask_y1:mask_y2, mask_x1:mask_x2]
-            
-            # Calculate distance from bbox center
-            local_dist_sq = (local_x_coords - center_x)**2 + (local_y_coords - center_y)**2
-            
-            # Create Gaussian heat with strong concentration at center, fading smoothly
-            # Use 2D Gaussian for smooth circular blur
-            base_gaussian = np.exp(-local_dist_sq / (2 * sigma**2))
-            gaussian_local = intensity * base_gaussian
+            dx_raw = local_x_coords - center_x
+            dy_raw = local_y_coords - center_y
+
+            gaussian_local = np.exp(
+                -((dx_raw ** 2) / (2 * sigma_x ** 2) + (dy_raw ** 2) / (2 * sigma_y ** 2))
+            )
+            gaussian_local *= intensity
             
             # Apply stronger heat inside the actual bbox region for accuracy
             # Check which pixels are inside the bbox
-            in_bbox_x = (local_x_coords >= x) & (local_x_coords < (x + w))
-            in_bbox_y = (local_y_coords >= y) & (local_y_coords < (y + h))
+            in_bbox_x = (local_x_coords >= x1) & (local_x_coords < x2)
+            in_bbox_y = (local_y_coords >= y1) & (local_y_coords < y2)
             in_bbox = in_bbox_x & in_bbox_y
             
             # Calculate distance from bbox center for stronger concentration
             # Pixels inside bbox get much stronger intensity, outside fade smoothly
-            bbox_radius_x = w / 2.0
-            bbox_radius_y = h / 2.0
+            bbox_radius_x = box_width / 2.0
+            bbox_radius_y = box_height / 2.0
             
             # Create elliptical distance metric for bbox shape
-            dx = (local_x_coords - center_x) / max(bbox_radius_x, 1)
-            dy = (local_y_coords - center_y) / max(bbox_radius_y, 1)
-            bbox_dist_sq = dx**2 + dy**2
+            dx_norm = dx_raw / max(bbox_radius_x, 1.0)
+            dy_norm = dy_raw / max(bbox_radius_y, 1.0)
+            bbox_dist_sq = dx_norm**2 + dy_norm**2
             
             # Strong boost inside bbox (within 1.2x bbox radius)
             in_bbox_strong = bbox_dist_sq < 1.2**2
@@ -549,8 +533,9 @@ def create_heatmap_overlay(
             gaussian_local = np.minimum(1.0, gaussian_local * boost_factor)
             
             # Apply within 4x sigma radius for smooth falloff and to capture edges
-            # Increased from 3.5x to 4x to ensure defects at image edges are fully highlighted
-            local_mask = local_dist_sq < (4.0 * sigma)**2
+            local_mask = (
+                (dx_raw ** 2) / (sigma_x * 4.0) ** 2 + (dy_raw ** 2) / (sigma_y * 4.0) ** 2
+            ) <= 1.0
             defect_mask_local = np.where(local_mask, gaussian_local.astype(np.float32), 0)
             
             # Apply additional Gaussian blur for smooth transitions (true Gaussian blur effect)

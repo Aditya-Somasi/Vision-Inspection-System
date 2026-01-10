@@ -7,7 +7,7 @@ import time
 import re
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 import base64
 import io
 
@@ -192,6 +192,8 @@ class VLMAuditorAgent(BaseVLMAgent):
             
             # Encode image with optimization
             image_data = self._encode_image_optimized(image_path)
+            with Image.open(image_path) as pil_image:
+                image_width, image_height = pil_image.size
             
             self.logger.debug(f"Calling {self.provider.upper()} API for verification...")
             start_time = time.time()
@@ -209,7 +211,10 @@ class VLMAuditorAgent(BaseVLMAgent):
             result_dict = self._parse_json_robust(response_text)
             
             # Validate and fix result (same as Inspector)
-            result_dict = self._validate_and_fix_result(result_dict)
+            result_dict = self._validate_and_fix_result(
+                result_dict,
+                (image_width, image_height),
+            )
             
             result = VLMAnalysisResult(**result_dict)
             
@@ -325,7 +330,11 @@ class VLMAuditorAgent(BaseVLMAgent):
         self.logger.error(f"JSON parsing failed. Raw text (first 500 chars): {text[:500]}")
         raise ValueError(f"Failed to parse JSON from model response")
     
-    def _validate_and_fix_result(self, result_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_and_fix_result(
+        self,
+        result_dict: Dict[str, Any],
+        image_size: Tuple[int, int],
+    ) -> Dict[str, Any]:
         """
         Validate and fix common issues in model output (same as Inspector).
         
@@ -400,60 +409,15 @@ class VLMAuditorAgent(BaseVLMAgent):
                 
                 # Validate bbox if present (same logic as Inspector)
                 if "bbox" in defect and defect["bbox"]:
-                    bbox = defect["bbox"]
-                    if isinstance(bbox, dict):
-                        required_keys = ["x", "y", "width", "height"]
-                        if all(k in bbox for k in required_keys):
-                            raw_x = bbox.get("x", 0)
-                            raw_y = bbox.get("y", 0)
-                            raw_w = bbox.get("width", 0)
-                            raw_h = bbox.get("height", 0)
-                            
-                            has_large_values = any(v > 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
-                            
-                            if has_large_values:
-                                self.logger.warning(f"Bbox values > 100 detected, assuming pixel format: {bbox}")
-                                defect["bbox"] = None
-                                defect["bbox_approximate"] = True
-                                self.logger.warning("Cannot reliably convert pixel coordinates - bbox removed")
-                            else:
-                                # Validate percentage range (0-100)
-                                if (raw_x < 0 or raw_x > 100 or raw_y < 0 or raw_y > 100 or
-                                    raw_w <= 0 or raw_w > 100 or raw_h <= 0 or raw_h > 100):
-                                    self.logger.warning(f"Bbox values out of valid percentage range: {bbox}")
-                                    defect["bbox"] = None
-                                    defect["bbox_approximate"] = True
-                                elif raw_x + raw_w > 100 or raw_y + raw_h > 100:
-                                    self.logger.warning(f"Bbox exceeds image bounds: {bbox}")
-                                    defect["bbox"] = None
-                                    defect["bbox_approximate"] = True
-                                else:
-                                    # Validate reasonableness - reduced minimum to 0.05% to include smaller defects
-                                    area_percent = (raw_w * raw_h) / 100.0
-                                    if area_percent < 0.05:
-                                        self.logger.warning(f"Bbox very small (area={area_percent:.2f}%) - may be noise: {bbox}")
-                                        # Only filter out very low-confidence defects with extremely small bbox (< 0.02%)
-                                        if defect_confidence == "low" and area_percent < 0.02:
-                                            self.logger.warning(
-                                                f"Filtering out auditor very low-confidence defect with extremely tiny bbox: {defect.get('type')}"
-                                            )
-                                            continue  # Skip this defect
-                                        defect["bbox_approximate"] = True
-                                    elif area_percent > 50.0:
-                                        self.logger.warning(f"Bbox too large (area={area_percent:.2f}%) - likely error: {bbox}")
-                                        defect["bbox"] = None
-                                        defect["bbox_approximate"] = True
-                                    else:
-                                        defect["bbox"] = {
-                                            "x": max(0, min(100, raw_x)),
-                                            "y": max(0, min(100, raw_y)),
-                                            "width": max(0.1, min(100, raw_w)),
-                                            "height": max(0.1, min(100, raw_h))
-                                        }
-                        else:
-                            defect["bbox"] = None
+                    normalized_bbox = self._normalize_bbox_percentages(
+                        defect["bbox"],
+                        image_size,
+                    )
+                    if normalized_bbox:
+                        defect["bbox"] = normalized_bbox
                     else:
                         defect["bbox"] = None
+                        defect["bbox_approximate"] = True
                 
                 # If defect has no bbox AND low confidence AND vague location, filter it out
                 if not defect.get("bbox") and defect_confidence == "low":

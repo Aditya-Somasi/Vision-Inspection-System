@@ -9,7 +9,7 @@ import json
 import base64
 import io
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from PIL import Image
 from huggingface_hub import InferenceClient
@@ -266,7 +266,11 @@ class VLMInspectorAgent(BaseVLMAgent):
         self.logger.error(f"JSON parsing failed. Raw text (first 500 chars): {text[:500]}")
         raise ValueError(f"Failed to parse JSON from model response")
     
-    def _validate_and_fix_result(self, result_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def _validate_and_fix_result(
+        self,
+        result_dict: Dict[str, Any],
+        image_size: Tuple[int, int],
+    ) -> Dict[str, Any]:
         """
         Validate and fix common issues in model output.
         
@@ -346,73 +350,15 @@ class VLMInspectorAgent(BaseVLMAgent):
                 
                 # Validate and normalize bbox if present
                 if "bbox" in defect and defect["bbox"]:
-                    bbox = defect["bbox"]
-                    if isinstance(bbox, dict):
-                        required_keys = ["x", "y", "width", "height"]
-                        if all(k in bbox for k in required_keys):
-                            # Normalize coordinates to percentages (0-100)
-                            # If values are > 100, assume they're pixels and need conversion
-                            # For now, we assume models return percentages per prompt instructions
-                            # But if they return pixels, we'll detect and normalize
-                            raw_x = bbox.get("x", 0)
-                            raw_y = bbox.get("y", 0)
-                            raw_w = bbox.get("width", 0)
-                            raw_h = bbox.get("height", 0)
-                            
-                            # Detect if values are likely pixels (any value > 100) vs percentages
-                            # Note: This is a heuristic - ideally models always return percentages
-                            has_large_values = any(v > 100 for v in [raw_x, raw_y, raw_w, raw_h] if v > 0)
-                            
-                            if has_large_values:
-                                # Likely pixel format - normalize assuming model image size
-                                # This is a fallback - models should return percentages per prompt
-                                self.logger.warning(f"Bbox values > 100 detected, assuming pixel format: {bbox}")
-                                # For safety, we'll set bbox to None if we can't reliably convert
-                                # In future, we could normalize if we know the model input image size
-                                defect["bbox"] = None
-                                defect["bbox_approximate"] = True
-                                self.logger.warning("Cannot reliably convert pixel coordinates without image size context - bbox removed")
-                            else:
-                                # Assume percentages (0-100), validate range
-                                if (raw_x < 0 or raw_x > 100 or raw_y < 0 or raw_y > 100 or
-                                    raw_w <= 0 or raw_w > 100 or raw_h <= 0 or raw_h > 100):
-                                    self.logger.warning(f"Bbox values out of valid percentage range (0-100): {bbox}")
-                                    defect["bbox"] = None
-                                    defect["bbox_approximate"] = True
-                                elif raw_x + raw_w > 100 or raw_y + raw_h > 100:
-                                    self.logger.warning(f"Bbox exceeds image bounds: x+width={raw_x+raw_w}, y+height={raw_y+raw_h}")
-                                    defect["bbox"] = None
-                                    defect["bbox_approximate"] = True
-                                else:
-                                    # Validate reasonableness (area between 0.05% and 50% of image)
-                                    # Reduced minimum from 0.1% to 0.05% to include smaller defects
-                                    area_percent = (raw_w * raw_h) / 100.0
-                                    if area_percent < 0.05:
-                                        self.logger.warning(f"Bbox very small (area={area_percent:.2f}% < 0.05%) - may be noise: {bbox}")
-                                        # Only filter out very low-confidence defects with extremely small bbox (< 0.02%)
-                                        if defect_confidence == "low" and area_percent < 0.02:
-                                            self.logger.warning(
-                                                f"Filtering out very low-confidence defect with extremely tiny bbox: {defect.get('type')}"
-                                            )
-                                            continue  # Skip this defect
-                                        # Don't remove, but flag as potentially invalid
-                                        defect["bbox_approximate"] = True
-                                    elif area_percent > 50.0:
-                                        self.logger.warning(f"Bbox too large (area={area_percent:.2f}% > 50%) - likely error: {bbox}")
-                                        defect["bbox"] = None
-                                        defect["bbox_approximate"] = True
-                                    else:
-                                        # Valid bbox, ensure all values are in correct range
-                                        defect["bbox"] = {
-                                            "x": max(0, min(100, raw_x)),
-                                            "y": max(0, min(100, raw_y)),
-                                            "width": max(0.1, min(100, raw_w)),
-                                            "height": max(0.1, min(100, raw_h))
-                                        }
-                        else:
-                            defect["bbox"] = None
+                    normalized_bbox = self._normalize_bbox_percentages(
+                        defect["bbox"],
+                        image_size,
+                    )
+                    if normalized_bbox:
+                        defect["bbox"] = normalized_bbox
                     else:
                         defect["bbox"] = None
+                        defect["bbox_approximate"] = True
                 
                 # If defect has no bbox AND low confidence AND vague location, it's likely a false positive
                 if not defect.get("bbox") and defect_confidence == "low":
@@ -457,6 +403,8 @@ class VLMInspectorAgent(BaseVLMAgent):
             
             # Encode image with optimization
             image_data = self._encode_image_optimized(image_path)
+            with Image.open(image_path) as pil_image:
+                image_width, image_height = pil_image.size
             
             # Build messages for chat completions API
             messages = [
@@ -483,7 +431,10 @@ class VLMInspectorAgent(BaseVLMAgent):
             result_dict = self._parse_json_robust(response_text)
             
             # Validate and fix result
-            result_dict = self._validate_and_fix_result(result_dict)
+            result_dict = self._validate_and_fix_result(
+                result_dict,
+                (image_width, image_height),
+            )
             
             # Create Pydantic model
             result = VLMAnalysisResult(**result_dict)

@@ -12,7 +12,7 @@ huggingface-hub
 groq
 requests
 plotly
-
+pandas
 # Data Validation
 pydantic
 pydantic-settings
